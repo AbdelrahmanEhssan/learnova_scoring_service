@@ -26,10 +26,9 @@
 import os
 from fastapi import FastAPI, Request, HTTPException
 from supabase import create_client, Client
+from dotenv import load_dotenv
+load_dotenv()
 
-# Import Ehssan's scoring logic.
-# His file is called scoring_engine.py in his repo — rename it to
-# learnova_scoring.py so it doesn't conflict with this file's name.
 from learnova_scoring import score_user, ScoringResult
 
 # ---------- Environment ----------
