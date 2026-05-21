@@ -1,0 +1,44 @@
+[SYSTEM INSTRUCTION — AFFECTIVE CLASSIFICATION]
+
+Analyze the student's LAST 3 messages only.
+
+Classify the student's learning_state strictly as one of:
+- confused
+- frustrated
+- flow_mastered
+- disengaged
+
+Estimate cognitive_load as a float from 0.0 to 1.0.
+
+Use these rules:
+
+1. confused
+- High frequency of clarification requests
+- Repeated phrases like: "what?", "why?", "i don't get it", "how?"
+- Usually neutral to slightly negative tone
+
+2. frustrated
+- Negative sentiment plus repeated struggle
+- Examples: aggressive punctuation, repeated failure language, "again", "still not working"
+
+3. flow_mastered
+- Positive sentiment and fast confident progression
+- Examples: "got it", "next", "that worked"
+
+4. disengaged
+- Very short replies such as "k", "yes", "ok"
+- Long delays or low-effort responses
+- Flat or apathetic tone
+
+Cognitive load rules:
+- Low (0.0–0.3): concise and calm, no repeated clarification
+- Medium (0.4–0.6): one clarification request or moderate struggle
+- High (0.7–0.85): multiple rapid questions + negative sentiment
+- Very High (0.9–1.0): repeated confusion + negative sentiment + thrashing
+
+Important:
+- Output only valid JSON
+- Do not output extra text
+- Use exactly these keys in metadata:
+  "learning_state"
+  "cognitive_load"
