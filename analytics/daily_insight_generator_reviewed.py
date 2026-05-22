@@ -1,320 +1,228 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import json
-import os
-import re
-from dataclasses import dataclass
-from difflib import SequenceMatcher
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import argparse
+import sys
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from statistics import mean
+from typing import Any, Dict, List, Optional
+
+
+"""
+Schema-aligned daily insight generator.
+
+Reads:
+- ml_daily_metrics
+- users
+
+Writes:
+- in_app_notifications for admin users, using notification_type='general'
+
+This avoids creating a new daily_briefings table for now.
+"""
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 try:
     from dotenv import load_dotenv
-except ImportError:  # dotenv is useful locally, but not mandatory in hosted envs.
-    load_dotenv = None
 
-try:
-    import google.generativeai as genai
-except ImportError:  # Allows local validation tests to run without the Gemini SDK installed.
-    genai = None
+    load_dotenv(ROOT_DIR / ".env")
+except Exception:
+    pass
 
-if load_dotenv is not None:
-    load_dotenv()
-
-DEFAULT_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-DEFAULT_BRIEFING = "Unable to generate briefing – please check analytics manually."
-
-SYSTEM_PROMPT = (
-    "You are a senior instructor. Based on the provided JSON analytics, write a concise "
-    "3-bullet executive summary. Highlight critical issues and positive trends. Do not invent data."
-)
-
-STOPWORDS = {
-    "the", "and", "or", "of", "to", "in", "on", "for", "with", "a", "an", "by",
-    "topic", "module", "lesson", "foundation", "shared", "sf", "id", "intro",
-}
+from services.supabase_client import supabase
 
 
-@dataclass(frozen=True)
-class TopicRisk:
-    topic_id: str
-    topic_name: str
-    avg_score: Optional[float]
-    failure_rate_pct: Optional[float] = None
-    students_affected: Optional[int] = None
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-def fetch_dashboard_context() -> Dict[str, Any]:
-    return {
-        "date": "2026-05-05",
-        "admin_topic_performance": [
-            {
-                "topic_id": "sf_sql_joins",
-                "topic_name": "SQL Joins",
-                "avg_score": 0.41,
-                "failure_rate_pct": 64.0,
-                "students_affected": 20,
-            },
-            {
-                "topic_id": "sf_python_loops",
-                "topic_name": "Python Loops & Iterative Logic",
-                "avg_score": 0.58,
-                "failure_rate_pct": 43.0,
-                "students_affected": 12,
-            },
-        ],
-        "admin_class_health": {
-            "snapshot_date": "2026-05-05",
-            "active_students": 142,
-            "negative_sentiment_rate": 0.18,
-            "high_risk_students": 9,
-            "class_health_status": "moderate_risk",
-        },
-        "admin_foundation_conversion_rate": [
-            {
-                "projected_specialization_id": "dip_data_analysis",
-                "foundation_starters": 80,
-                "checkpoint_passers": 58,
-                "entered_projected_diploma": 50,
-                "conversion_rate_pct": 62.5,
-            }
-        ],
-    }
+def parse_metric_date(raw: Optional[str]) -> date:
+    if raw:
+        return date.fromisoformat(raw)
+
+    return (utc_now() - timedelta(days=1)).date()
 
 
-def _safe_float(value: Any) -> Optional[float]:
+def safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        if value is None:
-            return None
         return float(value)
     except (TypeError, ValueError):
-        return None
+        return default
 
 
-def get_lowest_avg_score_topic(context_data: Dict[str, Any]) -> Optional[TopicRisk]:
-    topics = context_data.get("admin_topic_performance") or context_data.get("topic_performance") or []
-    if not isinstance(topics, list):
-        return None
-
-    valid_topics: List[TopicRisk] = []
-    for topic in topics:
-        if not isinstance(topic, dict):
-            continue
-        avg_score = _safe_float(topic.get("avg_score"))
-        if avg_score is None:
-            continue
-        topic_id = str(topic.get("topic_id", "")).strip()
-        topic_name = str(topic.get("topic_name") or topic.get("title") or topic_id).strip()
-        valid_topics.append(
-            TopicRisk(
-                topic_id=topic_id,
-                topic_name=topic_name,
-                avg_score=avg_score,
-                failure_rate_pct=_safe_float(topic.get("failure_rate_pct")),
-                students_affected=topic.get("students_affected"),
-            )
+def fetch_metrics(metric_date: date) -> List[Dict[str, Any]]:
+    response = (
+        supabase.table("ml_daily_metrics")
+        .select(
+            "user_id, concept_decay_score, engagement_velocity, "
+            "topic_struggle_index, metric_date, computed_at"
         )
-
-    if not valid_topics:
-        fallback = context_data.get("top_failing_topic")
-        if isinstance(fallback, dict):
-            return TopicRisk(
-                topic_id=str(fallback.get("topic_id", "")).strip(),
-                topic_name=str(fallback.get("topic_name") or fallback.get("topic_id") or "").strip(),
-                avg_score=_safe_float(fallback.get("avg_score")),
-                failure_rate_pct=_safe_float(fallback.get("failure_rate_pct")),
-                students_affected=fallback.get("students_affected"),
-            )
-        return None
-
-    return min(valid_topics, key=lambda item: item.avg_score if item.avg_score is not None else 1.0)
-
-
-def normalize_text(value: str) -> str:
-    value = value.lower()
-    value = value.replace("&", " and ")
-    value = re.sub(r"[^a-z0-9]+", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def tokenize_keywords(value: str) -> List[str]:
-    normalized = normalize_text(value)
-    tokens = [token for token in normalized.split() if token and token not in STOPWORDS]
-    return tokens
-
-
-def _ngrams(tokens: List[str], max_size: int = 5) -> Iterable[str]:
-    for size in range(1, min(max_size, len(tokens)) + 1):
-        for index in range(0, len(tokens) - size + 1):
-            yield " ".join(tokens[index:index + size])
-
-
-def build_topic_aliases(topic: TopicRisk) -> List[str]:
-    aliases = set()
-    if topic.topic_id:
-        aliases.add(normalize_text(topic.topic_id))
-        aliases.add(" ".join(tokenize_keywords(topic.topic_id)))
-    if topic.topic_name:
-        aliases.add(normalize_text(topic.topic_name))
-        aliases.add(" ".join(tokenize_keywords(topic.topic_name)))
-
-    # Add compact keyword aliases such as "joins", "loops", "iterative logic".
-    name_tokens = tokenize_keywords(topic.topic_name)
-    id_tokens = tokenize_keywords(topic.topic_id.replace("_", " "))
-    for token in name_tokens + id_tokens:
-        if len(token) >= 4:
-            aliases.add(token)
-    for token_list in (name_tokens, id_tokens):
-        for phrase in _ngrams(token_list, max_size=3):
-            if len(phrase) >= 4:
-                aliases.add(phrase)
-
-    return sorted(alias for alias in aliases if alias)
-
-
-def fuzzy_topic_mentioned(briefing_text: str, topic: TopicRisk, threshold: float = 0.78) -> bool:
-    normalized_briefing = normalize_text(briefing_text)
-    if not normalized_briefing or not topic:
-        return False
-
-    aliases = build_topic_aliases(topic)
-    briefing_tokens = normalized_briefing.split()
-    briefing_phrases = set(_ngrams(briefing_tokens, max_size=5))
-
-    for alias in aliases:
-        if not alias:
-            continue
-        if alias in normalized_briefing:
-            return True
-        for phrase in briefing_phrases:
-            if SequenceMatcher(None, alias, phrase).ratio() >= threshold:
-                return True
-
-    topic_keywords = [token for token in tokenize_keywords(topic.topic_name) if len(token) >= 4]
-    if topic_keywords:
-        matched_keywords = [token for token in topic_keywords if token in normalized_briefing]
-        # Require either one highly specific keyword for short names, or at least half the keywords.
-        if len(topic_keywords) <= 2 and matched_keywords:
-            return True
-        if len(matched_keywords) / len(topic_keywords) >= 0.5:
-            return True
-
-    return False
-
-
-def parse_three_bullet_briefing(text: str) -> Optional[List[str]]:
-    if not isinstance(text, str):
-        return None
-
-    candidate_lines = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        line = re.sub(r"^(?:[-*•]\s*|\d+[.)]\s*)", "", line).strip()
-        if line:
-            candidate_lines.append(line)
-
-    if len(candidate_lines) != 3:
-        return None
-
-    return candidate_lines
-
-
-def format_bullets(bullets: List[str]) -> str:
-    return "\n".join(f"- {bullet}" for bullet in bullets)
-
-
-def build_prompt(context_data: Dict[str, Any]) -> str:
-    lowest_topic = get_lowest_avg_score_topic(context_data)
-    required_topic_note = ""
-    if lowest_topic:
-        required_topic_note = (
-            "\n\nValidation requirement: The topic with the lowest avg_score is "
-            f"'{lowest_topic.topic_name}' (topic_id: {lowest_topic.topic_id}, "
-            f"avg_score: {lowest_topic.avg_score}). Mention this topic in the briefing "
-            "if it is a critical issue."
-        )
-
-    return (
-        f"{SYSTEM_PROMPT}"
-        "\n\nOutput format rules:"
-        "\n- Return exactly 3 bullets."
-        "\n- Each bullet must be one sentence."
-        "\n- Do not return JSON."
-        "\n- Do not mention data that is not present in the JSON."
-        "\n- Include both risk and positive trend coverage when available."
-        f"{required_topic_note}"
-        f"\n\nJSON analytics:\n{json.dumps(context_data, ensure_ascii=False, indent=2)}"
+        .eq("metric_date", metric_date.isoformat())
+        .execute()
     )
 
-
-def _configure_model(model_name: str):
-    if genai is None:
-        raise RuntimeError("google-generativeai is not installed.")
-
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is missing.")
-
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel(model_name)
+    data = response.data or []
+    return data if isinstance(data, list) else []
 
 
-def generate_daily_briefing(
-    context_data: Dict[str, Any],
-    model_name: str = DEFAULT_MODEL_NAME,
-    timeout_seconds: int = 20,
-) -> str:
-    try:
-        model = _configure_model(model_name)
-        response = model.generate_content(
-            build_prompt(context_data),
-            generation_config=genai.GenerationConfig(
-                temperature=0.2,
-                max_output_tokens=350,
+def fetch_admin_users() -> List[Dict[str, Any]]:
+    response = (
+        supabase.table("users")
+        .select("id, email, full_name, role")
+        .eq("role", "admin")
+        .execute()
+    )
+
+    data = response.data or []
+    return data if isinstance(data, list) else []
+
+
+def classify_health(avg_engagement: float, avg_struggle: float, avg_decay: float) -> str:
+    if avg_struggle >= 0.65 or avg_decay >= 0.70:
+        return "high_attention_needed"
+
+    if avg_engagement >= 0.60 and avg_struggle <= 0.35:
+        return "healthy"
+
+    return "mixed"
+
+
+def generate_daily_briefing(metric_date: date, metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not metrics:
+        return {
+            "briefing": (
+                f"LearNova Daily Insight â€” {metric_date.isoformat()}\n"
+                "- No ML daily metrics were found for this date.\n"
+                "- Run the ML pipeline first or check whether students had activity.\n"
+                "- No admin action is required yet."
             ),
-            request_options={"timeout": timeout_seconds},
-        )
-        response_text = getattr(response, "text", "")
-        bullets = parse_three_bullet_briefing(response_text)
-        if bullets is None:
-            return DEFAULT_BRIEFING
-        return format_bullets(bullets)
-    except Exception:
-        return DEFAULT_BRIEFING
+            "validation_passed": True,
+            "health": "no_data",
+            "summary": {
+                "students_count": 0,
+                "avg_engagement_velocity": 0.0,
+                "avg_topic_struggle_index": 0.0,
+                "avg_concept_decay_score": 0.0,
+            },
+        }
 
+    engagement_values = [safe_float(row.get("engagement_velocity")) for row in metrics]
+    struggle_values = [safe_float(row.get("topic_struggle_index")) for row in metrics]
+    decay_values = [safe_float(row.get("concept_decay_score")) for row in metrics]
 
-def validate_briefing_mentions_lowest_score_topic(
-    context_data: Dict[str, Any],
-    briefing_text: str,
-) -> Tuple[bool, Optional[TopicRisk]]:
-    lowest_topic = get_lowest_avg_score_topic(context_data)
-    if lowest_topic is None:
-        return True, None
-    return fuzzy_topic_mentioned(briefing_text, lowest_topic), lowest_topic
+    avg_engagement = mean(engagement_values) if engagement_values else 0.0
+    avg_struggle = mean(struggle_values) if struggle_values else 0.0
+    avg_decay = mean(decay_values) if decay_values else 0.0
 
+    high_struggle_count = sum(1 for value in struggle_values if value >= 0.65)
+    high_decay_count = sum(1 for value in decay_values if value >= 0.70)
+    low_engagement_count = sum(1 for value in engagement_values if value <= 0.25)
 
-def generate_and_validate_daily_briefing(context_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convenience wrapper for the backend/admin service.
-    """
-    briefing = generate_daily_briefing(context_data)
-    validation_passed, topic_checked = validate_briefing_mentions_lowest_score_topic(
-        context_data,
-        briefing,
+    health = classify_health(
+        avg_engagement=avg_engagement,
+        avg_struggle=avg_struggle,
+        avg_decay=avg_decay,
     )
+
+    briefing = (
+        f"LearNova Daily Insight â€” {metric_date.isoformat()}\n"
+        f"- Engagement: average engagement velocity is {avg_engagement:.2f}; "
+        f"{low_engagement_count} student(s) had low engagement.\n"
+        f"- Struggle: average topic struggle index is {avg_struggle:.2f}; "
+        f"{high_struggle_count} student(s) show high struggle.\n"
+        f"- Decay: average concept decay score is {avg_decay:.2f}; "
+        f"{high_decay_count} student(s) may need review or intervention."
+    )
+
+    validation_passed = bool(briefing and "- Engagement:" in briefing and "- Struggle:" in briefing)
 
     return {
         "briefing": briefing,
         "validation_passed": validation_passed,
-        "validated_topic_id": topic_checked.topic_id if topic_checked else None,
-        "validated_topic_name": topic_checked.topic_name if topic_checked else None,
-        "model": DEFAULT_MODEL_NAME,
-        "used_fallback": briefing == DEFAULT_BRIEFING,
+        "health": health,
+        "summary": {
+            "students_count": len(metrics),
+            "avg_engagement_velocity": round(avg_engagement, 4),
+            "avg_topic_struggle_index": round(avg_struggle, 4),
+            "avg_concept_decay_score": round(avg_decay, 4),
+            "high_struggle_count": high_struggle_count,
+            "high_decay_count": high_decay_count,
+            "low_engagement_count": low_engagement_count,
+        },
     }
 
 
+def save_admin_notifications(metric_date: date, result: Dict[str, Any]) -> Dict[str, Any]:
+    admins = fetch_admin_users()
+
+    if not admins:
+        return {
+            "ok": True,
+            "notifications_inserted": 0,
+            "reason": "No admin users found.",
+        }
+
+    rows = []
+
+    for admin in admins:
+        rows.append(
+            {
+                "user_id": admin["id"],
+                "title": f"LearNova Daily Insight â€” {metric_date.isoformat()}",
+                "body": result["briefing"],
+                "notification_type": "general",
+                "is_read": False,
+                "metadata": {
+                    "source": "daily_insight_generator_reviewed",
+                    "metric_date": metric_date.isoformat(),
+                    "validation_passed": result.get("validation_passed"),
+                    "health": result.get("health"),
+                    "summary": result.get("summary"),
+                    "generated_at": utc_now().isoformat(),
+                },
+            }
+        )
+
+    response = supabase.table("in_app_notifications").insert(rows).execute()
+
+    return {
+        "ok": True,
+        "notifications_inserted": len(response.data or rows),
+    }
+
+
+def generate_and_validate_daily_briefing(metric_date: Optional[date] = None, save: bool = True) -> Dict[str, Any]:
+    metric_date = metric_date or parse_metric_date(None)
+    metrics = fetch_metrics(metric_date)
+    result = generate_daily_briefing(metric_date, metrics)
+
+    save_result = None
+
+    if save:
+        save_result = save_admin_notifications(metric_date, result)
+
+    return {
+        "ok": True,
+        "metric_date": metric_date.isoformat(),
+        "result": result,
+        "save_result": save_result,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", help="Metric date in YYYY-MM-DD. Defaults to yesterday UTC.")
+    parser.add_argument("--no-save", action="store_true", help="Generate but do not insert admin notifications.")
+    args = parser.parse_args()
+
+    metric_date = parse_metric_date(args.date)
+    result = generate_and_validate_daily_briefing(metric_date=metric_date, save=not args.no_save)
+
+    print(result)
+
+
 if __name__ == "__main__":
-    dashboard_context = fetch_dashboard_context()
-    result = generate_and_validate_daily_briefing(dashboard_context)
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    main()

@@ -1,305 +1,359 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import argparse
 import os
+import sys
 from collections import defaultdict
-from datetime import date, datetime, timezone, timedelta
-from math import exp
-from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Tuple
-
-from supabase import Client, create_client
-
-UserTopicKey = Tuple[str, str]
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-LOOKBACK_DAYS = int(os.environ.get("ANALYTICS_LOOKBACK_DAYS", "30"))
-PASSING_SCORE = float(os.environ.get("ANALYTICS_PASSING_SCORE", "0.60"))
+from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
+from statistics import mean
+from typing import Any, Dict, Iterable, List, Optional
 
 
-def require_env() -> None:
-    """Fail fast if production credentials are not configured."""
-    missing = [
-        name
-        for name, value in {
-            "SUPABASE_URL": SUPABASE_URL,
-            "SUPABASE_SERVICE_ROLE_KEY": SUPABASE_KEY,
-        }.items()
-        if not value
-    ]
-    if missing:
-        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+"""
+Schema-aligned LearNova daily ML metrics pipeline.
+
+Writes to existing table:
+- ml_daily_metrics
+
+Reads from existing tables:
+- users
+- content_engagement_logs
+- student_module_attempts
+- student_challenge_attempts
+- student_level_attempts
+- student_sentiment_history
+- chat_sessions
+- chat_messages
+
+This replaces old references to:
+- quiz_attempts
+- mitchy_interaction_logs
+- ml_aggregated_metrics
+"""
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT_DIR / ".env")
+except Exception:
+    pass
+
+from services.supabase_client import supabase
 
 
-def get_supabase_client() -> Client:
-    require_env()
-    return create_client(SUPABASE_URL, SUPABASE_KEY)  # type: ignore[arg-type]
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-def parse_datetime(value: Any) -> datetime:
-    """Parse Supabase/PostgreSQL timestamps safely."""
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    if not value:
-        return datetime.now(timezone.utc)
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+def parse_metric_date(raw: Optional[str]) -> date:
+    if raw:
+        return date.fromisoformat(raw)
+
+    env_value = os.getenv("METRIC_DATE")
+    if env_value:
+        return date.fromisoformat(env_value)
+
+    # Cron normally runs after midnight, so compute yesterday by default.
+    return (utc_now() - timedelta(days=1)).date()
+
+
+def day_window(metric_date: date) -> tuple[str, str]:
+    start = datetime.combine(metric_date, time.min, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+
+    return start.isoformat(), end.isoformat()
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        if value is None:
-            return default
         return float(value)
     except (TypeError, ValueError):
         return default
 
 
-def average(values: Iterable[float], default: float = 0.0) -> float:
-    values_list = list(values)
-    if not values_list:
-        return default
-    return sum(values_list) / len(values_list)
+def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return round(max(low, min(value, high)), 4)
 
 
-def clamp_probability(value: float) -> float:
-    return max(0.0, min(1.0, value))
+def fetch_all(table: str, select: str = "*", filters: Optional[List[tuple[str, str, Any]]] = None) -> List[Dict[str, Any]]:
+    query = supabase.table(table).select(select)
 
-def calculate_concept_decay_from_quizzes(quiz_rows: List[Dict[str, Any]]) -> Optional[float]:
-    if len(quiz_rows) < 2:
-        return None
-
-    ordered = sorted(quiz_rows, key=lambda row: parse_datetime(row.get("created_at")))
-    first = ordered[0]
-    latest = ordered[-1]
-
-    first_score = clamp_probability(safe_float(first.get("score")))
-    latest_score = clamp_probability(safe_float(latest.get("score")))
-    first_at = parse_datetime(first.get("created_at"))
-    latest_at = parse_datetime(latest.get("created_at"))
-
-    days_between = (latest_at - first_at).total_seconds() / 86_400
-    safe_days = max(days_between, 1.0)  # avoids divide-by-zero and noisy same-day infinity
-
-    return round((first_score - latest_score) / safe_days, 6)
-
-
-def calculate_engagement_velocity_7d(engagement_rows: List[Dict[str, Any]]) -> float:
-    minutes_by_day: DefaultDict[date, float] = defaultdict(float)
-    for row in engagement_rows:
-        created_day = parse_datetime(row.get("created_at")).date()
-        minutes_by_day[created_day] += safe_float(row.get("duration_seconds")) / 60.0
-
-    if not minutes_by_day:
-        return 0.0
-
-    recent_days = sorted(minutes_by_day.keys())[-7:]
-    values = [minutes_by_day[day] for day in recent_days]
-    return round(sum(values) / len(values), 2)
-
-
-def calculate_engagement_ema(engagement_rows: List[Dict[str, Any]], alpha: float = 0.3) -> float:
-    minutes_by_day: DefaultDict[date, float] = defaultdict(float)
-    for row in engagement_rows:
-        created_day = parse_datetime(row.get("created_at")).date()
-        minutes_by_day[created_day] += safe_float(row.get("duration_seconds")) / 60.0
-
-    ordered_minutes = [minutes_by_day[day] for day in sorted(minutes_by_day.keys())]
-    if not ordered_minutes:
-        return 0.0
-
-    ema = ordered_minutes[0]
-    for minutes in ordered_minutes[1:]:
-        ema = (minutes * alpha) + (ema * (1.0 - alpha))
-    return round(ema, 2)
-
-
-def calculate_retention_estimate(quiz_rows: List[Dict[str, Any]], decay_constant: float = 0.1) -> float:
-    if not quiz_rows:
-        return 0.0
-
-    latest = max(quiz_rows, key=lambda row: parse_datetime(row.get("created_at")))
-    latest_score = clamp_probability(safe_float(latest.get("score")))
-    latest_at = parse_datetime(latest.get("created_at"))
-    days_since_latest = max((datetime.now(timezone.utc) - latest_at).total_seconds() / 86_400, 0.0)
-
-    retention = latest_score * exp(-decay_constant * days_since_latest)
-    return round(clamp_probability(retention), 4)
-
-
-def calculate_negative_sentiment_rate(sentiment_rows: List[Dict[str, Any]]) -> float:
-    sentiment_scores = [safe_float(row.get("sentiment_score")) for row in sentiment_rows if row.get("sentiment_score") is not None]
-    if not sentiment_scores:
-        return 0.0
-    negative_count = sum(1 for score in sentiment_scores if score < 0)
-    return round(negative_count / len(sentiment_scores), 6)
-
-
-def calculate_topic_struggle_index(
-    quiz_rows: List[Dict[str, Any]],
-    sentiment_rows: List[Dict[str, Any]],
-) -> Optional[float]:
-    if not quiz_rows:
-        return None
-
-    attempt_count = len(quiz_rows)
-    avg_score = average([clamp_probability(safe_float(row.get("score"))) for row in quiz_rows], default=1.0)
-    negative_rate = calculate_negative_sentiment_rate(sentiment_rows)
-
-    return round(attempt_count * (1.0 - avg_score) * (1.0 + negative_rate), 6)
-
-
-def update_struggle_probability(prior_probability: float, evidence_signals: List[str]) -> float:
-    likelihood_ratios = {
-        "failed_quiz": 2.5,
-        "multiple_attempts": 1.8,
-        "negative_sentiment": 3.0,
-        "low_completion_rate": 1.6,
-        "passed_quiz": 0.2,
-        "positive_sentiment": 0.6,
-        "high_completion_rate": 0.5,
-    }
-
-    prior = min(max(prior_probability, 0.001), 0.999)
-    odds = prior / (1.0 - prior)
-
-    for signal in evidence_signals:
-        odds *= likelihood_ratios.get(signal, 1.0)
-
-    posterior = odds / (1.0 + odds)
-    return round(clamp_probability(posterior), 4)
-
-
-def build_evidence_signals(
-    engagement_rows: List[Dict[str, Any]],
-    quiz_rows: List[Dict[str, Any]],
-    sentiment_rows: List[Dict[str, Any]],
-) -> List[str]:
-    evidence: List[str] = []
-
-    scores = [clamp_probability(safe_float(row.get("score"))) for row in quiz_rows]
-    if scores:
-        latest_quiz = max(quiz_rows, key=lambda row: parse_datetime(row.get("created_at")))
-        latest_score = clamp_probability(safe_float(latest_quiz.get("score")))
-        if latest_score < PASSING_SCORE:
-            evidence.append("failed_quiz")
-        else:
-            evidence.append("passed_quiz")
-
-    if len(quiz_rows) >= 2:
-        evidence.append("multiple_attempts")
-
-    sentiment_scores = [safe_float(row.get("sentiment_score")) for row in sentiment_rows if row.get("sentiment_score") is not None]
-    if sentiment_scores:
-        avg_sentiment = average(sentiment_scores)
-        if calculate_negative_sentiment_rate(sentiment_rows) >= 0.30:
-            evidence.append("negative_sentiment")
-        elif avg_sentiment > 0.20:
-            evidence.append("positive_sentiment")
-
-    completion_values = [safe_float(row.get("completion_percentage"), 100.0) for row in engagement_rows]
-    if completion_values:
-        avg_completion = average(completion_values, default=100.0)
-        if avg_completion < 50:
-            evidence.append("low_completion_rate")
-        elif avg_completion >= 80:
-            evidence.append("high_completion_rate")
-
-    return evidence
-
-def fetch_table(client: Client, table_name: str, select_clause: str = "*") -> List[Dict[str, Any]]:
-    since = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).isoformat()
-
-    query = client.table(table_name).select(select_clause)
-    if table_name in {"content_engagement_logs", "mitchy_interaction_logs"}:
-        query = query.gte("created_at", since)
+    for operation, column, value in filters or []:
+        if operation == "eq":
+            query = query.eq(column, value)
+        elif operation == "gte":
+            query = query.gte(column, value)
+        elif operation == "lt":
+            query = query.lt(column, value)
+        elif operation == "lte":
+            query = query.lte(column, value)
+        elif operation == "neq":
+            query = query.neq(column, value)
 
     response = query.execute()
-    return response.data or []
+    data = response.data or []
+
+    return data if isinstance(data, list) else []
 
 
-def fetch_raw_data(client: Client) -> Dict[str, List[Dict[str, Any]]]:
-    print("Fetching raw analytics data from Supabase...")
+def group_by_user(rows: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+    for row in rows:
+        user_id = row.get("user_id")
+        if user_id:
+            grouped[str(user_id)].append(row)
+
+    return grouped
+
+
+def average_score_from_attempts(rows: List[Dict[str, Any]]) -> Optional[float]:
+    scores = []
+
+    for row in rows:
+        score = row.get("score")
+        if score is not None:
+            scores.append(safe_float(score))
+
+    if not scores:
+        return None
+
+    # Scores in your app are usually 0-100.
+    return mean(scores)
+
+
+def failure_ratio(rows: List[Dict[str, Any]]) -> float:
+    if not rows:
+        return 0.0
+
+    failures = 0
+
+    for row in rows:
+        if row.get("passed") is False:
+            failures += 1
+        elif row.get("completed") is False:
+            failures += 1
+        elif row.get("score") is not None and safe_float(row.get("score")) < 70:
+            failures += 1
+
+    return failures / len(rows)
+
+
+def compute_engagement_velocity(
+    engagement_rows: List[Dict[str, Any]],
+    chat_rows: List[Dict[str, Any]],
+) -> float:
+    if not engagement_rows and not chat_rows:
+        return 0.0
+
+    time_spent = sum(int(row.get("time_spent_seconds") or 0) for row in engagement_rows)
+    time_component = min(time_spent / 3600.0, 1.0)
+
+    engagement_scores = [
+        safe_float(row.get("engagement_score"))
+        for row in engagement_rows
+        if row.get("engagement_score") is not None
+    ]
+
+    score_component = clamp(mean(engagement_scores), 0.0, 1.0) if engagement_scores else 0.0
+    chat_component = min(len(chat_rows) / 10.0, 1.0)
+
+    return clamp((0.45 * time_component) + (0.35 * score_component) + (0.20 * chat_component))
+
+
+def compute_topic_struggle_index(
+    module_attempts: List[Dict[str, Any]],
+    challenge_attempts: List[Dict[str, Any]],
+    level_attempts: List[Dict[str, Any]],
+    sentiments: List[Dict[str, Any]],
+) -> float:
+    attempts = module_attempts + challenge_attempts + level_attempts
+
+    attempt_failure = failure_ratio(attempts)
+
+    average_score = average_score_from_attempts(attempts)
+    score_struggle = 0.0 if average_score is None else clamp((100.0 - average_score) / 100.0)
+
+    negative_sentiments = [
+        safe_float(row.get("sentiment_score"))
+        for row in sentiments
+        if row.get("sentiment_score") is not None and safe_float(row.get("sentiment_score")) < 0
+    ]
+
+    sentiment_struggle = 0.0
+    if negative_sentiments:
+        # -1.0 should become 1.0 struggle; -0.2 becomes 0.2.
+        sentiment_struggle = clamp(abs(mean(negative_sentiments)))
+
+    return clamp((0.40 * attempt_failure) + (0.35 * score_struggle) + (0.25 * sentiment_struggle))
+
+
+def compute_concept_decay_score(
+    engagement_rows: List[Dict[str, Any]],
+    progress_like_attempts: List[Dict[str, Any]],
+    sentiments: List[Dict[str, Any]],
+) -> float:
+    has_activity = bool(engagement_rows or progress_like_attempts or sentiments)
+
+    if not has_activity:
+        return 0.75
+
+    negative_sentiments = [
+        safe_float(row.get("sentiment_score"))
+        for row in sentiments
+        if row.get("sentiment_score") is not None and safe_float(row.get("sentiment_score")) < 0
+    ]
+
+    sentiment_component = clamp(abs(mean(negative_sentiments))) if negative_sentiments else 0.0
+    low_engagement_component = 1.0 - compute_engagement_velocity(engagement_rows, [])
+
+    return clamp((0.55 * low_engagement_component) + (0.45 * sentiment_component))
+
+
+def run_pipeline(metric_date: Optional[date] = None) -> Dict[str, Any]:
+    metric_date = metric_date or parse_metric_date(None)
+    start_iso, end_iso = day_window(metric_date)
+
+    users = fetch_all(
+        "users",
+        "id, email, role",
+        filters=[("eq", "role", "student")],
+    )
+
+    engagement = fetch_all(
+        "content_engagement_logs",
+        "user_id, topic_id, format_type, time_spent_seconds, engagement_score, logged_at",
+        filters=[("gte", "logged_at", start_iso), ("lt", "logged_at", end_iso)],
+    )
+
+    module_attempts = fetch_all(
+        "student_module_attempts",
+        "user_id, assessment_id, score, passed, submitted_at",
+        filters=[("gte", "submitted_at", start_iso), ("lt", "submitted_at", end_iso)],
+    )
+
+    challenge_attempts = fetch_all(
+        "student_challenge_attempts",
+        "user_id, challenge_id, score, completed, submitted_at",
+        filters=[("gte", "submitted_at", start_iso), ("lt", "submitted_at", end_iso)],
+    )
+
+    level_attempts = fetch_all(
+        "student_level_attempts",
+        "user_id, assessment_id, score, passed, submitted_at",
+        filters=[("gte", "submitted_at", start_iso), ("lt", "submitted_at", end_iso)],
+    )
+
+    sentiments = fetch_all(
+        "student_sentiment_history",
+        "user_id, sentiment_score, learning_state, session_context, recorded_at",
+        filters=[("gte", "recorded_at", start_iso), ("lt", "recorded_at", end_iso)],
+    )
+
+    sessions = fetch_all(
+        "chat_sessions",
+        "id, user_id, started_at",
+        filters=[("lt", "started_at", end_iso)],
+    )
+
+    session_to_user = {
+        str(row.get("id")): str(row.get("user_id"))
+        for row in sessions
+        if row.get("id") and row.get("user_id")
+    }
+
+    messages = fetch_all(
+        "chat_messages",
+        "session_id, role, sent_at",
+        filters=[("gte", "sent_at", start_iso), ("lt", "sent_at", end_iso)],
+    )
+
+    chat_rows_by_user: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in messages:
+        user_id = session_to_user.get(str(row.get("session_id")))
+        if user_id:
+            chat_rows_by_user[user_id].append(row)
+
+    engagement_by_user = group_by_user(engagement)
+    module_by_user = group_by_user(module_attempts)
+    challenge_by_user = group_by_user(challenge_attempts)
+    level_by_user = group_by_user(level_attempts)
+    sentiment_by_user = group_by_user(sentiments)
+
+    rows_to_upsert: List[Dict[str, Any]] = []
+
+    for user in users:
+        user_id = str(user["id"])
+
+        user_engagement = engagement_by_user.get(user_id, [])
+        user_module = module_by_user.get(user_id, [])
+        user_challenge = challenge_by_user.get(user_id, [])
+        user_level = level_by_user.get(user_id, [])
+        user_sentiment = sentiment_by_user.get(user_id, [])
+        user_chat = chat_rows_by_user.get(user_id, [])
+
+        attempts = user_module + user_challenge + user_level
+
+        row = {
+            "user_id": user_id,
+            "metric_date": metric_date.isoformat(),
+            "concept_decay_score": compute_concept_decay_score(
+                engagement_rows=user_engagement,
+                progress_like_attempts=attempts,
+                sentiments=user_sentiment,
+            ),
+            "engagement_velocity": compute_engagement_velocity(
+                engagement_rows=user_engagement,
+                chat_rows=user_chat,
+            ),
+            "topic_struggle_index": compute_topic_struggle_index(
+                module_attempts=user_module,
+                challenge_attempts=user_challenge,
+                level_attempts=user_level,
+                sentiments=user_sentiment,
+            ),
+            "computed_at": utc_now().isoformat(),
+        }
+
+        rows_to_upsert.append(row)
+
+    if rows_to_upsert:
+        supabase.table("ml_daily_metrics").upsert(
+            rows_to_upsert,
+            on_conflict="user_id,metric_date",
+        ).execute()
+
     return {
-        "engagement": fetch_table(client, "content_engagement_logs"),
-        "quizzes": fetch_table(client, "quiz_attempts"),
-        "sentiment": fetch_table(client, "mitchy_interaction_logs"),
+        "ok": True,
+        "metric_date": metric_date.isoformat(),
+        "users_processed": len(users),
+        "rows_upserted": len(rows_to_upsert),
+        "source_counts": {
+            "content_engagement_logs": len(engagement),
+            "student_module_attempts": len(module_attempts),
+            "student_challenge_attempts": len(challenge_attempts),
+            "student_level_attempts": len(level_attempts),
+            "student_sentiment_history": len(sentiments),
+            "chat_messages": len(messages),
+        },
     }
 
 
-def group_by_user_topic(rows: Iterable[Dict[str, Any]]) -> Dict[UserTopicKey, List[Dict[str, Any]]]:
-    grouped: DefaultDict[UserTopicKey, List[Dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        user_id = row.get("user_id")
-        topic_id = row.get("topic_id")
-        if not user_id or not topic_id:
-            continue
-        grouped[(str(user_id), str(topic_id))].append(row)
-    return dict(grouped)
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", help="Metric date in YYYY-MM-DD. Defaults to yesterday UTC.")
+    args = parser.parse_args()
 
+    metric_date = parse_metric_date(args.date)
+    result = run_pipeline(metric_date=metric_date)
 
-def process_metrics(raw_data: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    engagement_by_key = group_by_user_topic(raw_data.get("engagement", []))
-    quizzes_by_key = group_by_user_topic(raw_data.get("quizzes", []))
-    sentiment_by_key = group_by_user_topic(raw_data.get("sentiment", []))
-
-    all_keys = sorted(set(engagement_by_key) | set(quizzes_by_key) | set(sentiment_by_key))
-    today = date.today().isoformat()
-    calculated_at = datetime.now(timezone.utc).isoformat()
-
-    payload: List[Dict[str, Any]] = []
-    for user_id, topic_id in all_keys:
-        engagement_rows = engagement_by_key.get((user_id, topic_id), [])
-        quiz_rows = quizzes_by_key.get((user_id, topic_id), [])
-        sentiment_rows = sentiment_by_key.get((user_id, topic_id), [])
-
-        concept_decay_rate = calculate_concept_decay_from_quizzes(quiz_rows)
-        engagement_velocity_7d = calculate_engagement_velocity_7d(engagement_rows)
-        engagement_ema = calculate_engagement_ema(engagement_rows)
-        retention_estimate = calculate_retention_estimate(quiz_rows)
-        topic_struggle_index = calculate_topic_struggle_index(quiz_rows, sentiment_rows)
-
-        evidence = build_evidence_signals(engagement_rows, quiz_rows, sentiment_rows)
-        struggle_probability = update_struggle_probability(0.30, evidence)
-
-        payload.append(
-            {
-                "snapshot_date": today,
-                "user_id": user_id,
-                "topic_id": topic_id,
-                "concept_decay_rate": concept_decay_rate,
-                "engagement_velocity_7d": engagement_velocity_7d,
-                "topic_struggle_index": topic_struggle_index,
-                "engagement_ema": engagement_ema,
-                "retention_estimate": retention_estimate,
-                "struggle_probability": struggle_probability,
-                "calculated_at": calculated_at,
-            }
-        )
-
-    return payload
-
-
-def upsert_metrics(client: Client, metrics_payload: List[Dict[str, Any]]) -> None:
-    if not metrics_payload:
-        print("No metrics to upsert.")
-        return
-
-    print(f"Upserting {len(metrics_payload)} daily metric rows into ml_aggregated_metrics...")
-    client.table("ml_aggregated_metrics").upsert(
-        metrics_payload,
-        on_conflict="snapshot_date,user_id,topic_id",
-    ).execute()
-    print("Metrics upsert completed.")
-
-
-def run_pipeline() -> None:
-    print("--- Starting LearNova Analytics Orchestrator ---")
-    client = get_supabase_client()
-    raw_data = fetch_raw_data(client)
-    metrics_payload = process_metrics(raw_data)
-    upsert_metrics(client, metrics_payload)
-    print("--- Analytics pipeline finished successfully ---")
+    print(result)
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    main()
