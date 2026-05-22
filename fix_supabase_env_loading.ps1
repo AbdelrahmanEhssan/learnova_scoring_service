@@ -1,4 +1,5 @@
-﻿import os
+Set-Content -Path "services/supabase_client.py" -Encoding UTF8 -Value @'
+import os
 
 from dotenv import load_dotenv
 from supabase import Client, create_client
@@ -30,3 +31,6 @@ supabase: Client = create_client(
     SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY,
 )
+'@
+
+Write-Host "services/supabase_client.py now loads .env safely."
