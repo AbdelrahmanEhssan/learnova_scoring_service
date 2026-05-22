@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Optional
 
-from chat_logic_v3 import process_chat
+from affective.chat_logic_v3 import process_chat
 
 from mitchy.db import (
     fetch_content_context,

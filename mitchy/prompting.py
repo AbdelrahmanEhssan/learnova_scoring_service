@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-PROMPT_BLOCK_PATH = ROOT_DIR / "mitchy_affective_prompt_block.txt"
+PROMPT_BLOCK_PATH = ROOT_DIR / "prompts" / "mitchy_affective_prompt_block.txt"
 
 
 def load_mitchy_prompt_block() -> str:

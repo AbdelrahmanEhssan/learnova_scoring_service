@@ -1,6 +1,6 @@
 from typing import Dict, Any
-from scoring_engine import score_user
-from scoring_config import TRACK_LABELS
+from personalization.learnova_scoring import score_user
+from personalization.scoring_config import TRACK_LABELS
 
 
 def generate_routing_response(raw_payload: Dict[str, Any], weights_path: str = "track_weights.csv") -> Dict[str, Any]:
