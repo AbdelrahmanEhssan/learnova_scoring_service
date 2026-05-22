@@ -6,7 +6,7 @@ import os
 
 import pandas as pd
 
-from scoring_config import (
+from personalization.scoring_config import (
     TRACKS,
     TRACK_LABELS,
     IMMEDIATE_DESTINATION,

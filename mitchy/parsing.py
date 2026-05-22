@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Dict, Optional
 
-from json_repair import safe_parse_json
+from affective.json_repair import safe_parse_json
 
 
 def _strip_code_fence(text: str) -> str:

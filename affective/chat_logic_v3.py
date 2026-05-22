@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
-from trend_tracker import get_trend_state
-from mitchy_affective_schema_v2 import validate_affective_output
-from json_repair import safe_parse_json
+from affective.trend_tracker import get_trend_state
+from affective.mitchy_affective_schema_v2 import validate_affective_output
+from affective.json_repair import safe_parse_json
 
 
 NEGATIVE_WORDS = {
