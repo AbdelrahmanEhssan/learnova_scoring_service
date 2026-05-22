@@ -80,8 +80,10 @@ def _call_gemini_once(prompt: str, model_name: str, api_key: str) -> Tuple[Optio
 def _build_model_list(primary_model: str) -> list[str]:
     models = [
         primary_model,
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
         "gemini-2.0-flash",
-        "gemini-1.5-flash",
+        "gemini-2.0-flash-lite",
     ]
 
     deduped: list[str] = []
