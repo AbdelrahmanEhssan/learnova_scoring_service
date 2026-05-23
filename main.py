@@ -29,7 +29,17 @@ def debug_env_check():
 
 @app.get("/debug/answer-key")
 def debug_answer_key():
-    return get_answer_key_stats()
+    try:
+        return {
+            "ok": True,
+            **get_answer_key_stats(),
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "error": str(error),
+            "error_type": type(error).__name__,
+        }
 
 class DiagnosticScoreRequest(BaseModel):
     result_id: str

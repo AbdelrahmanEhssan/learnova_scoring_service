@@ -12,7 +12,6 @@ ANSWER_KEY_FILENAME = "diagnostic_answer_key_full_seed_by_question_key.json"
 def _seed_path() -> Path:
     return Path(__file__).resolve().parent / ANSWER_KEY_FILENAME
 
-
 @lru_cache(maxsize=1)
 def load_answer_key_rows() -> List[Dict[str, Any]]:
     path = _seed_path()
@@ -26,10 +25,21 @@ def load_answer_key_rows() -> List[Dict[str, Any]]:
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
-    if not isinstance(data, list):
-        raise ValueError("Diagnostic answer-key seed must be a JSON list of rows.")
+    # Supports both formats:
+    # 1. Raw list: [...]
+    # 2. Wrapped seed: {"rows": [...]}
+    if isinstance(data, dict):
+        rows = data.get("rows")
+    else:
+        rows = data
 
-    return [row for row in data if isinstance(row, dict)]
+    if not isinstance(rows, list):
+        raise ValueError(
+            "Diagnostic answer-key seed must be either a JSON list "
+            "or an object containing a 'rows' list."
+        )
+
+    return [row for row in rows if isinstance(row, dict)]
 
 
 @lru_cache(maxsize=1)
@@ -130,7 +140,6 @@ def match_answer_key(raw_answer: Any) -> Optional[Dict[str, Any]]:
 
     return None
 
-
 def get_answer_key_stats() -> Dict[str, Any]:
     rows = load_answer_key_rows()
 
@@ -142,7 +151,9 @@ def get_answer_key_stats() -> Dict[str, Any]:
         question_key = str(row.get("question_key", ""))
 
         by_exam[exam_key] = by_exam.get(exam_key, 0) + 1
-        questions_by_exam.setdefault(exam_key, set()).add(question_key)
+
+        if question_key:
+            questions_by_exam.setdefault(exam_key, set()).add(question_key)
 
     return {
         "answer_key_file": str(_seed_path()),
