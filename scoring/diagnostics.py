@@ -1,570 +1,400 @@
 from __future__ import annotations
 
 from statistics import mean
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+
+from scoring.diagnostic_answer_key import match_answer_key
 
 
-BIG5_TRAITS = [
-    "openness",
-    "conscientiousness",
-    "extraversion",
-    "agreeable",
-    "neuroticism",
-]
+BIG5_DEFAULTS = {
+    "openness": 0.0,
+    "conscientiousness": 0.0,
+    "extraversion": 0.0,
+    "agreeable": 0.0,
+    "neuroticism": 0.0,
+}
 
-SOFT_SKILLS = [
-    "communication",
-    "teamwork",
-    "conflict_resolution",
-    "ethics",
-    "leadership",
-    "problem_solving",
-    "emotional_intelligence",
-    "time_management",
-    "accountability",
-]
+SOFT_SKILL_DEFAULTS = {
+    "communication": 0.0,
+    "teamwork": 0.0,
+    "conflict_resolution": 0.0,
+    "ethics": 0.0,
+    "leadership": 0.0,
+    "problem_solving": 0.0,
+    "emotional_intelligence": 0.0,
+    "time_management": 0.0,
+    "accountability": 0.0,
+}
 
-VARK_STYLES = [
-    "visual",
-    "auditory",
-    "read_write",
-    "kinesthetic",
-]
+VARK_DEFAULTS = {
+    "visual": 0.0,
+    "auditory": 0.0,
+    "read_write": 0.0,
+    "kinesthetic": 0.0,
+}
 
-RIASEC_TRAITS = [
-    "realistic",
-    "investigative",
-    "artistic",
-    "social",
-    "enterprising",
-    "conventional",
-]
+RIASEC_DEFAULTS = {
+    "realistic": 0.0,
+    "investigative": 0.0,
+    "artistic": 0.0,
+    "social": 0.0,
+    "enterprising": 0.0,
+    "conventional": 0.0,
+}
 
-IQ_SECTIONS = [
-    ("logical_reasoning", 15),
-    ("abstract_reasoning", 20),
-    ("spatial_reasoning", 20),
-]
-
-
-CATEGORY_ALIASES = {
-    # Big Five
-    "agreeableness": "agreeable",
-    "agreeable": "agreeable",
-    "openness": "openness",
-    "conscientiousness": "conscientiousness",
-    "extraversion": "extraversion",
-    "neuroticism": "neuroticism",
-
-    # Soft skills
-    "communication": "communication",
-    "teamwork": "teamwork",
-    "conflict": "conflict_resolution",
-    "conflict_resolution": "conflict_resolution",
-    "ethics": "ethics",
-    "leadership": "leadership",
-    "problem_solving": "problem_solving",
-    "problem solving": "problem_solving",
-    "emotional_intelligence": "emotional_intelligence",
-    "emotional intelligence": "emotional_intelligence",
-    "time_management": "time_management",
-    "time management": "time_management",
-    "accountability": "accountability",
-
-    # VARK
-    "v": "visual",
-    "visual": "visual",
-    "a": "auditory",
-    "auditory": "auditory",
-    "r": "read_write",
-    "read": "read_write",
-    "read_write": "read_write",
-    "read/write": "read_write",
-    "readwrite": "read_write",
-    "textual": "read_write",
-    "text": "read_write",
-    "k": "kinesthetic",
-    "kinesthetic": "kinesthetic",
-
-    # RIASEC
-    "realistic": "realistic",
-    "investigative": "investigative",
-    "artistic": "artistic",
-    "social": "social",
-    "enterprising": "enterprising",
-    "conventional": "conventional",
-
-    # IQ
-    "logical": "logical_reasoning",
-    "logic": "logical_reasoning",
-    "logical_reasoning": "logical_reasoning",
-    "abstract": "abstract_reasoning",
-    "abstract_reasoning": "abstract_reasoning",
-    "spatial": "spatial_reasoning",
-    "spatial_reasoning": "spatial_reasoning",
+IQ_DEFAULTS = {
+    "logical_reasoning": 0.0,
+    "abstract_reasoning": 0.0,
+    # The optimized IQ exam currently has Abstract + Logical only.
+    # Keep spatial_reasoning as 0 for compatibility with the routing model.
+    "spatial_reasoning": 0.0,
 }
 
 
-def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(value, high))
-
-
-def round_score(value: float) -> float:
+def _round(value: float) -> float:
     return round(float(value), 4)
 
 
-def normalize_category(value: Any) -> Optional[str]:
+def _normalize_key(value: Any) -> Optional[str]:
     if value is None:
         return None
 
-    key = str(value).strip().lower().replace("-", "_")
-    key = key.replace(" ", "_")
+    text = str(value).strip().lower()
+    text = text.replace("-", "_").replace("/", "_").replace(" ", "_")
 
-    if key in CATEGORY_ALIASES:
-        return CATEGORY_ALIASES[key]
+    aliases = {
+        "read_write": "read_write",
+        "readwrite": "read_write",
+        "textual": "read_write",
+        "text": "read_write",
+        "visual": "visual",
+        "auditory": "auditory",
+        "kinesthetic": "kinesthetic",
+        "openness": "openness",
+        "conscientiousness": "conscientiousness",
+        "extraversion": "extraversion",
+        "agreeable": "agreeable",
+        "agreeableness": "agreeable",
+        "neuroticism": "neuroticism",
+        "conflict_resolution": "conflict_resolution",
+        "problem_solving": "problem_solving",
+        "emotional_intelligence": "emotional_intelligence",
+        "time_management": "time_management",
+        "logical_reasoning": "logical_reasoning",
+        "abstract_reasoning": "abstract_reasoning",
+        "spatial_reasoning": "spatial_reasoning",
+    }
 
-    key_space = key.replace("_", " ")
-    return CATEGORY_ALIASES.get(key_space)
+    return aliases.get(text, text)
 
 
-def get_answer_items(raw_answers: Any) -> List[Any]:
+def _get_answer_items(raw_answers: Any) -> List[Any]:
+    if isinstance(raw_answers, list):
+        return raw_answers
+
     if isinstance(raw_answers, dict):
         for key in ["answers", "responses", "items", "data"]:
             value = raw_answers.get(key)
             if isinstance(value, list):
                 return value
 
-        # Sometimes raw_answers itself is a dict of question_id -> answer.
         if raw_answers:
             return list(raw_answers.values())
-
-        return []
-
-    if isinstance(raw_answers, list):
-        return raw_answers
 
     return []
 
 
-def extract_numeric_value(item: Any) -> Optional[float]:
-    if isinstance(item, bool):
-        return 1.0 if item else 0.0
+def _selected_summary(answer: Any) -> Dict[str, Any]:
+    if not isinstance(answer, dict):
+        return {}
 
-    if isinstance(item, (int, float)):
-        return float(item)
-
-    if isinstance(item, str):
-        stripped = item.strip()
-        try:
-            return float(stripped)
-        except ValueError:
-            return None
-
-    if not isinstance(item, dict):
-        return None
-
-    if isinstance(item.get("is_correct"), bool):
-        return 1.0 if item["is_correct"] else 0.0
-
-    for key in [
-        "score",
-        "value",
-        "answer_value",
-        "selected_value",
-        "rating",
-        "points",
-        "raw_score",
-    ]:
-        if key in item and item[key] is not None:
-            try:
-                return float(item[key])
-            except (TypeError, ValueError):
-                pass
-
-    answer = item.get("answer") or item.get("selected") or item.get("selected_option")
-
-    if isinstance(answer, bool):
-        return 1.0 if answer else 0.0
-
-    if isinstance(answer, (int, float)):
-        return float(answer)
-
-    if isinstance(answer, str):
-        try:
-            return float(answer.strip())
-        except ValueError:
-            return None
-
-    return None
+    return {
+        "question_key": answer.get("question_key"),
+        "selected_index": answer.get("selected_index"),
+        "selected_label": answer.get("selected_label"),
+    }
 
 
-def extract_category(item: Any) -> Optional[str]:
-    if isinstance(item, str):
-        return normalize_category(item)
+def _match_rows(answers: List[Any]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    matched: List[Dict[str, Any]] = []
+    unmatched: List[Dict[str, Any]] = []
 
-    if not isinstance(item, dict):
-        return None
+    for answer in answers:
+        row = match_answer_key(answer)
 
-    for key in [
-        "category",
-        "trait",
-        "dimension",
-        "skill",
-        "scale",
-        "domain",
-        "style",
-        "section",
-        "type",
-    ]:
-        if key in item:
-            normalized = normalize_category(item.get(key))
-            if normalized:
-                return normalized
-
-    for key in ["answer", "selected", "selected_option", "selected_style"]:
-        if key in item:
-            normalized = normalize_category(item.get(key))
-            if normalized:
-                return normalized
-
-    return None
-
-
-def is_reverse_scored(item: Any) -> bool:
-    if not isinstance(item, dict):
-        return False
-
-    for key in ["reverse", "reverse_scored", "is_reverse"]:
-        if isinstance(item.get(key), bool):
-            return item[key]
-
-    return False
-
-
-def maybe_reverse_likert(value: float, reverse: bool, low: float = 1.0, high: float = 5.0) -> float:
-    if not reverse:
-        return value
-
-    return high + low - value
-
-
-def grouped_average_scores(
-    items: List[Any],
-    labels: List[str],
-    value_low: float,
-    value_high: float,
-) -> Tuple[Dict[str, float], List[str]]:
-    grouped: Dict[str, List[float]] = {label: [] for label in labels}
-    warnings: List[str] = []
-
-    for item in items:
-        category = extract_category(item)
-
-        if category not in grouped:
-            continue
-
-        value = extract_numeric_value(item)
-
-        if value is None:
-            warnings.append(f"Missing numeric value for category {category}")
-            continue
-
-        value = maybe_reverse_likert(
-            value,
-            reverse=is_reverse_scored(item),
-            low=value_low,
-            high=value_high,
-        )
-
-        grouped[category].append(clamp(value, value_low, value_high))
-
-    scores: Dict[str, float] = {}
-
-    for label in labels:
-        values = grouped[label]
-        if values:
-            scores[label] = round_score(mean(values))
+        if row:
+            matched.append(row)
         else:
-            scores[label] = value_low
-            warnings.append(f"No answers found for {label}; defaulted to {value_low}")
+            unmatched.append(_selected_summary(answer))
 
-    return scores, warnings
-
-
-def chunk_average_scores(
-    items: List[Any],
-    labels: List[str],
-    value_low: float,
-    value_high: float,
-) -> Tuple[Dict[str, float], List[str]]:
-    warnings = ["Used fallback chunk-based scoring because answer categories were missing."]
-
-    values = []
-
-    for item in items:
-        value = extract_numeric_value(item)
-        if value is not None:
-            values.append(clamp(value, value_low, value_high))
-
-    if not values:
-        return {label: value_low for label in labels}, warnings + ["No numeric answers found."]
-
-    chunk_size = max(1, len(values) // len(labels))
-    scores: Dict[str, float] = {}
-
-    for index, label in enumerate(labels):
-        start = index * chunk_size
-        end = len(values) if index == len(labels) - 1 else (index + 1) * chunk_size
-        chunk = values[start:end]
-        scores[label] = round_score(mean(chunk)) if chunk else value_low
-
-    return scores, warnings
+    return matched, unmatched
 
 
-def has_any_known_category(items: List[Any], labels: List[str]) -> bool:
-    label_set = set(labels)
+def _mean_features(values_by_feature: Dict[str, List[float]], defaults: Dict[str, float]) -> Dict[str, float]:
+    output: Dict[str, float] = dict(defaults)
 
-    for item in items:
-        category = extract_category(item)
-        if category in label_set:
-            return True
+    for feature, values in values_by_feature.items():
+        normalized = _normalize_key(feature)
 
-    return False
+        if not normalized:
+            continue
+
+        if values:
+            output[normalized] = _round(mean(values))
+
+    return output
+
+
+def _get_score_value(row: Dict[str, Any], default: float = 0.0) -> float:
+    value = row.get("score_value")
+
+    if value is None:
+        value = row.get("answer_value")
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def score_ipip(answers: List[Any]) -> Dict[str, Any]:
-    if has_any_known_category(answers, BIG5_TRAITS):
-        features, warnings = grouped_average_scores(
-            answers,
-            BIG5_TRAITS,
-            value_low=1.0,
-            value_high=5.0,
-        )
-        method = "category_average"
-    else:
-        features, warnings = chunk_average_scores(
-            answers,
-            BIG5_TRAITS,
-            value_low=1.0,
-            value_high=5.0,
-        )
-        method = "fallback_chunk_average"
+    matched, unmatched = _match_rows(answers)
+
+    values_by_feature: Dict[str, List[float]] = {}
+
+    for row in matched:
+        if row.get("test_number") != 1:
+            continue
+
+        feature_key = _normalize_key(row.get("feature_key") or row.get("trait"))
+
+        if not feature_key:
+            continue
+
+        values_by_feature.setdefault(feature_key, []).append(_get_score_value(row, default=0.0))
+
+    features = _mean_features(values_by_feature, BIG5_DEFAULTS)
 
     return {
         "exam": "personality_ipip",
         "status": "scored",
-        "scoring_method": method,
+        "scoring_method": "answer_key_trait_likert",
         "answer_count": len(answers),
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
         "features": features,
-        "warnings": warnings,
+        "warnings": [
+            f"{len(unmatched)} answer(s) could not be matched by question_key + selected_index."
+        ] if unmatched else [],
+        "unmatched_answers": unmatched[:10],
     }
-
-
-def scale_to_0_10(value: float) -> float:
-    # If values are Likert 1-5, convert to 0-10.
-    if 1.0 <= value <= 5.0:
-        return ((value - 1.0) / 4.0) * 10.0
-
-    return clamp(value, 0.0, 10.0)
 
 
 def score_soft_skills(answers: List[Any]) -> Dict[str, Any]:
-    if has_any_known_category(answers, SOFT_SKILLS):
-        raw_features, warnings = grouped_average_scores(
-            answers,
-            SOFT_SKILLS,
-            value_low=0.0,
-            value_high=10.0,
-        )
-        method = "category_average"
-    else:
-        raw_features, warnings = chunk_average_scores(
-            answers,
-            SOFT_SKILLS,
-            value_low=0.0,
-            value_high=10.0,
-        )
-        method = "fallback_chunk_average"
+    matched, unmatched = _match_rows(answers)
 
-    features = {
-        skill: round_score(scale_to_0_10(value))
-        for skill, value in raw_features.items()
-    }
+    values_by_feature: Dict[str, List[float]] = {}
+
+    for row in matched:
+        if row.get("test_number") != 2:
+            continue
+
+        contributions = row.get("feature_contributions")
+
+        if isinstance(contributions, dict) and contributions:
+            for feature_key, value in contributions.items():
+                normalized = _normalize_key(feature_key)
+                if not normalized:
+                    continue
+
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    numeric_value = _get_score_value(row, default=0.0)
+
+                values_by_feature.setdefault(normalized, []).append(numeric_value)
+
+            continue
+
+        feature_keys = row.get("feature_keys") or []
+        score_value = _get_score_value(row, default=0.0)
+
+        if isinstance(feature_keys, list):
+            for feature_key in feature_keys:
+                normalized = _normalize_key(feature_key)
+                if normalized:
+                    values_by_feature.setdefault(normalized, []).append(score_value)
+
+    features = _mean_features(values_by_feature, SOFT_SKILL_DEFAULTS)
 
     return {
         "exam": "soft_skills",
         "status": "scored",
-        "scoring_method": method,
+        "scoring_method": "answer_key_sjt_weighted_score",
         "answer_count": len(answers),
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
         "features": features,
-        "warnings": warnings,
+        "warnings": [
+            f"{len(unmatched)} answer(s) could not be matched by question_key + selected_index."
+        ] if unmatched else [],
+        "unmatched_answers": unmatched[:10],
     }
 
 
 def score_vark(answers: List[Any]) -> Dict[str, Any]:
-    counts = {style: 0 for style in VARK_STYLES}
-    warnings: List[str] = []
+    matched, unmatched = _match_rows(answers)
 
-    for item in answers:
-        selected_values: List[Any] = []
+    features = dict(VARK_DEFAULTS)
+    style_counts = {
+        "Visual": 0,
+        "Auditory": 0,
+        "Textual": 0,
+        "Kinesthetic": 0,
+    }
 
-        if isinstance(item, dict):
-            for key in [
-                "selected_styles",
-                "selected_options",
-                "answers",
-                "answer",
-                "selected",
-                "selected_option",
-                "style",
-            ]:
-                if key in item:
-                    value = item.get(key)
-                    if isinstance(value, list):
-                        selected_values.extend(value)
-                    else:
-                        selected_values.append(value)
-                    break
-        else:
-            selected_values.append(item)
-
-        if not selected_values:
-            warnings.append("Missing VARK selected option.")
+    for row in matched:
+        if row.get("test_number") != 3:
             continue
 
-        for selected in selected_values:
-            style = normalize_category(selected)
+        feature_key = _normalize_key(row.get("feature_key") or row.get("style"))
 
-            if style in counts:
-                counts[style] += 1
-            else:
-                warnings.append(f"Unknown VARK option: {selected}")
+        if feature_key in features:
+            features[feature_key] += 1
 
-    dominant_style = max(counts, key=counts.get) if counts else "read_write"
+        style = row.get("style")
+        if style in style_counts:
+            style_counts[style] += 1
+
+    # DB supports Visual/Auditory/Textual only.
+    db_style_scores = {
+        "Visual": features["visual"],
+        "Auditory": features["auditory"],
+        "Textual": features["read_write"] + features["kinesthetic"],
+    }
+
+    dominant_db_learning_style = max(db_style_scores, key=db_style_scores.get)
 
     return {
         "exam": "vark",
         "status": "scored",
-        "scoring_method": "style_count",
+        "scoring_method": "answer_key_category_count",
         "answer_count": len(answers),
-        "features": counts,
-        "dominant_style": dominant_style,
-        "warnings": warnings,
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
+        "features": {
+            key: _round(value)
+            for key, value in features.items()
+        },
+        "style_counts": style_counts,
+        "db_style_scores": db_style_scores,
+        "dominant_style": dominant_db_learning_style,
+        "warnings": [
+            f"{len(unmatched)} answer(s) could not be matched by question_key + selected_index."
+        ] if unmatched else [],
+        "unmatched_answers": unmatched[:10],
     }
 
 
 def score_career_onet(answers: List[Any]) -> Dict[str, Any]:
-    if has_any_known_category(answers, RIASEC_TRAITS):
-        features, warnings = grouped_average_scores(
-            answers,
-            RIASEC_TRAITS,
-            value_low=1.0,
-            value_high=5.0,
+    matched, unmatched = _match_rows(answers)
+
+    values_by_feature: Dict[str, List[float]] = {}
+    track_weight_totals = {
+        "DA": 0.0,
+        "DE": 0.0,
+        "DS": 0.0,
+    }
+
+    for row in matched:
+        if row.get("test_number") != 4:
+            continue
+
+        feature_key = _normalize_key(
+            row.get("feature_key")
+            or row.get("aptitude_category")
+            or row.get("trait")
         )
-        method = "category_average"
-    else:
-        features, warnings = chunk_average_scores(
-            answers,
-            RIASEC_TRAITS,
-            value_low=1.0,
-            value_high=5.0,
-        )
-        method = "fallback_chunk_average"
+
+        score_value = _get_score_value(row, default=0.0)
+
+        if feature_key:
+            values_by_feature.setdefault(feature_key, []).append(score_value)
+
+        for track_key, row_key in [
+            ("DA", "weight_da"),
+            ("DE", "weight_de"),
+            ("DS", "weight_ds"),
+        ]:
+            try:
+                track_weight_totals[track_key] += float(row.get(row_key) or 0.0)
+            except (TypeError, ValueError):
+                pass
+
+    features = _mean_features(values_by_feature, RIASEC_DEFAULTS)
 
     return {
         "exam": "career_interest_onet",
         "status": "scored",
-        "scoring_method": method,
+        "scoring_method": "answer_key_riasec_trait_score",
         "answer_count": len(answers),
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
         "features": features,
-        "warnings": warnings,
+        "track_weight_totals": {
+            key: _round(value)
+            for key, value in track_weight_totals.items()
+        },
+        "warnings": [
+            f"{len(unmatched)} answer(s) could not be matched by question_key + selected_index."
+        ] if unmatched else [],
+        "unmatched_answers": unmatched[:10],
     }
 
 
 def score_iq(answers: List[Any]) -> Dict[str, Any]:
-    section_scores = {
-        "logical_reasoning": 0.0,
-        "abstract_reasoning": 0.0,
-        "spatial_reasoning": 0.0,
-    }
+    matched, unmatched = _match_rows(answers)
 
+    section_scores = dict(IQ_DEFAULTS)
     section_counts = {
         "logical_reasoning": 0,
         "abstract_reasoning": 0,
         "spatial_reasoning": 0,
     }
 
-    warnings: List[str] = []
+    for row in matched:
+        if row.get("test_number") != 5:
+            continue
 
-    if has_any_known_category(answers, list(section_scores.keys())):
-        method = "section_correctness_or_score"
+        feature_key = _normalize_key(row.get("feature_key"))
 
-        for item in answers:
-            section = extract_category(item)
+        if feature_key not in section_scores:
+            continue
 
-            if section not in section_scores:
-                continue
-
-            value = extract_numeric_value(item)
-
-            if value is None:
-                warnings.append(f"Missing IQ score/correctness value for {section}")
-                continue
-
-            # Most IQ rows should be 0/1 correctness. If a larger score is provided,
-            # this still sums it safely.
-            section_scores[section] += max(0.0, value)
-            section_counts[section] += 1
-
-    else:
-        method = "fallback_chunk_sum"
-        warnings.append(
-            "Used fallback IQ chunk scoring because section/correctness fields were missing."
-        )
-
-        values = []
-
-        for item in answers:
-            value = extract_numeric_value(item)
-            if value is not None:
-                values.append(max(0.0, value))
-
-        cursor = 0
-
-        for section, expected_count in IQ_SECTIONS:
-            chunk = values[cursor: cursor + expected_count]
-            cursor += expected_count
-
-            if not chunk:
-                continue
-
-            # Treat positive values as points. If Flutter sends 0/1, this is true score.
-            section_scores[section] = sum(chunk)
-            section_counts[section] = len(chunk)
-
-    # Clamp to configured ranges used by personalization/scoring_config.py.
-    section_scores["logical_reasoning"] = clamp(section_scores["logical_reasoning"], 0.0, 15.0)
-    section_scores["abstract_reasoning"] = clamp(section_scores["abstract_reasoning"], 0.0, 20.0)
-    section_scores["spatial_reasoning"] = clamp(section_scores["spatial_reasoning"], 0.0, 20.0)
-
-    features = {
-        key: round_score(value)
-        for key, value in section_scores.items()
-    }
+        section_scores[feature_key] += _get_score_value(row, default=0.0)
+        section_counts[feature_key] += 1
 
     return {
         "exam": "iq",
         "status": "scored",
-        "scoring_method": method,
+        "scoring_method": "answer_key_correct_answer",
         "answer_count": len(answers),
-        "features": features,
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
+        "features": {
+            key: _round(value)
+            for key, value in section_scores.items()
+        },
         "section_counts": section_counts,
-        "warnings": warnings,
+        "warnings": [
+            f"{len(unmatched)} answer(s) could not be matched by question_key + selected_index."
+        ] if unmatched else [],
+        "unmatched_answers": unmatched[:10],
     }
 
 
 def score_diagnostic(test_number: int, raw_answers: Any) -> Dict[str, Any]:
-    answers = get_answer_items(raw_answers)
+    answers = _get_answer_items(raw_answers)
 
     if test_number == 1:
         return score_ipip(answers)
@@ -585,4 +415,5 @@ def score_diagnostic(test_number: int, raw_answers: Any) -> Dict[str, Any]:
         "status": "error",
         "message": "Unknown diagnostic test number",
         "test_number": test_number,
+        "answer_count": len(answers),
     }

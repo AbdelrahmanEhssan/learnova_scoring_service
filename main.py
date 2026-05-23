@@ -4,7 +4,7 @@ from unittest import result
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
-
+from scoring.diagnostic_answer_key import get_answer_key_stats
 from mitchy.core import process_mitchy_message
 from scoring.challenge import compute_challenge_score
 from scoring.diagnostics import score_diagnostic
@@ -26,6 +26,10 @@ def debug_env_check():
         "has_mitchy_service_api_key": bool(os.getenv("MITCHY_SERVICE_API_KEY")),
         "has_gemini_api_key": bool(os.getenv("GEMINI_API_KEY")),
     }
+
+@app.get("/debug/answer-key")
+def debug_answer_key():
+    return get_answer_key_stats()
 
 class DiagnosticScoreRequest(BaseModel):
     result_id: str
