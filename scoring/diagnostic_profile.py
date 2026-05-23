@@ -278,14 +278,8 @@ def maybe_update_diagnostic_profile(user_id: str) -> Dict[str, Any]:
 
     missing_features = sorted(ROUTING_FEATURES - set(routing_payload.keys()))
 
-    if missing_features:
-        return {
-            "ok": True,
-            "profile_updated": False,
-            "reason": "computed_scores_missing_routing_features",
-            "missing_features": missing_features,
-            "available_features": sorted(routing_payload.keys()),
-        }
+    for missing_feature in missing_features:
+        routing_payload[missing_feature] = 0.0
 
     weights_path = _get_weights_path()
     routing_result = score_user(routing_payload, weights_path)
