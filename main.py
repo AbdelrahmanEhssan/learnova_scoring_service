@@ -1,9 +1,14 @@
-﻿from fastapi import Depends, FastAPI, HTTPException
+﻿import os
+
+from unittest import result
+
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from mitchy.core import process_mitchy_message
 from scoring.challenge import compute_challenge_score
 from scoring.diagnostics import score_diagnostic
+from scoring.diagnostic_profile import maybe_update_diagnostic_profile
 from scoring.level_written import grade_level_written_attempt
 from scoring.module_exam import compute_module_score
 from services.auth import require_api_key, require_mitchy_api_key
@@ -12,6 +17,15 @@ from services.supabase_client import supabase
 
 app = FastAPI(title="LearNova Scoring Service")
 
+@app.get("/debug/env-check")
+def debug_env_check():
+    return {
+        "has_scoring_api_key": bool(os.getenv("SCORING_API_KEY")),
+        "has_supabase_url": bool(os.getenv("SUPABASE_URL")),
+        "has_supabase_service_role_key": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")),
+        "has_mitchy_service_api_key": bool(os.getenv("MITCHY_SERVICE_API_KEY")),
+        "has_gemini_api_key": bool(os.getenv("GEMINI_API_KEY")),
+    }
 
 class DiagnosticScoreRequest(BaseModel):
     result_id: str
@@ -79,15 +93,19 @@ def score_diagnostic_result(
         .update({"computed_scores": computed_scores})
         .eq("id", payload.result_id)
         .execute()
-    )
+)
+
+    profile_update = maybe_update_diagnostic_profile(result["user_id"])
 
     return {
         "ok": True,
         "result_id": payload.result_id,
+        "user_id": result["user_id"],
         "test_number": result["test_number"],
         "computed_scores": computed_scores,
         "updated": update_response.data,
-    }
+        "profile_update": profile_update,
+}
 
 
 @app.post("/score/level-attempt")
