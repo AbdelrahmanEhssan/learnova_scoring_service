@@ -139,20 +139,26 @@ def _bayesian_alphas_from_payload(payload: Dict[str, float]) -> Dict[str, float]
         "bayesian_alpha_textual": round(textual, 4),
     }
 
-
 def _assigned_track_from_scores(final_track_scores: Dict[str, float], fallback_triggered: bool) -> str:
-    if fallback_triggered:
-        return "Foundation"
+    """
+    Foundation is the common starting path for all students.
+    The diagnostic result should still write the projected specialization
+    into student_profiles.assigned_track: DA, DE, or DS.
 
-    if not final_track_scores:
-        return "Foundation"
+    We intentionally ignore fallback_triggered here because fallback is a UI /
+    learning-path concept, not the specialization field.
+    """
 
-    best_track = max(final_track_scores, key=final_track_scores.get)
+    valid_track_scores = {
+        track: float(score)
+        for track, score in final_track_scores.items()
+        if track in {"DA", "DE", "DS"}
+    }
 
-    if best_track in {"DA", "DE", "DS"}:
-        return best_track
+    if not valid_track_scores:
+        raise ValueError("No valid DA/DE/DS final track scores were produced.")
 
-    return "Foundation"
+    return max(valid_track_scores, key=valid_track_scores.get)
 
 
 def _upsert_student_profile(
