@@ -381,6 +381,13 @@ def save_mitchy_interaction(
     3. chat_messages role=assistant
     4. student_sentiment_history
     """
+    safe_mitchy_response = str(mitchy_response or "").strip()
+
+    if not safe_mitchy_response:
+        safe_mitchy_response = (
+            "I’m here with you. Tell me what part feels unclear, "
+            "and we’ll break it down step by step."
+        )
     try:
         session_id = fetch_or_create_chat_session(
             user_id=user_id,
@@ -432,7 +439,7 @@ def save_mitchy_interaction(
                 {
                     "session_id": session_id,
                     "role": "assistant",
-                    "content": mitchy_response,
+                    "content": safe_mitchy_response,
                     "mitchy_action": assistant_action,
                     "detected_learning_state": learning_state,
                 }

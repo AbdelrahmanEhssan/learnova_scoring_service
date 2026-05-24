@@ -341,9 +341,27 @@ def mitchy_chat(
 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+    
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Mitchy failed safely: {str(exc)}",
-        ) from exc
+        fallback_text = (
+            "I’m here with you. Tell me what part feels unclear, "
+            "and we’ll break it down step by step."
+        )
+
+        return {
+            "ok": True,
+            "response_text": fallback_text,
+            "learning_state": "confused",
+            "sentiment_score": 0.0,
+            "cognitive_load": 0.3,
+            "suggested_action": "rescue_explanation",
+            "recommended_format": "textual",
+            "recommended_format_db": "Textual",
+            "confidence": 0.3,
+            "metadata": {
+                "source": "api_exception_fallback",
+                "used_gemini": False,
+                "logged": False,
+                "error": str(exc)[:800],
+            },
+        }

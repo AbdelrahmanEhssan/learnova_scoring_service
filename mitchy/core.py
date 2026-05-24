@@ -130,6 +130,38 @@ def _build_local_only_output(
 
     return output
 
+def _model_payload_has_text(payload: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+
+    response_text = payload.get("response_text") or payload.get("text")
+
+    return isinstance(response_text, str) and bool(response_text.strip())
+
+
+def _force_non_empty_output(
+    output: Dict[str, Any],
+    local_analysis: Dict[str, Any],
+    source: str,
+) -> Dict[str, Any]:
+    fallback_text = str(
+        local_analysis.get("response_text")
+        or "I’m here with you. Tell me what part feels unclear, and we’ll break it down step by step."
+    ).strip()
+
+    if not fallback_text:
+        fallback_text = "I’m here with you. Tell me what part feels unclear, and we’ll break it down step by step."
+
+    response_text = output.get("response_text")
+
+    if not isinstance(response_text, str) or not response_text.strip():
+        output["response_text"] = fallback_text
+        output.setdefault("metadata", {})
+        output["metadata"]["source"] = source
+        output["metadata"]["used_gemini"] = False
+        output["metadata"]["forced_non_empty_response"] = True
+
+    return output
 
 def _build_crisis_output(
     local_analysis: Dict[str, Any],
@@ -210,39 +242,52 @@ def process_mitchy_message(
             default_format=default_format,
         )
         model_name = "local_safety_rule"
-
     elif _needs_gemini(clean_message, local_analysis):
-        prompt = build_mitchy_prompt(
-            message=clean_message,
-            profile=profile,
-            recent_history=recent_turns,
-            local_analysis=local_analysis,
-            recommended_format=default_format,
-            content_context=content_context,
-            topic_id=topic_id,
-            module_id=module_id,
-            screen_context=screen_context,
-        )
-
-        raw_model_text, gemini_error, model_name = generate_mitchy_json(prompt)
-        parsed_model_output = parse_model_json(raw_model_text)
-
-        if parsed_model_output:
-            final_output = normalize_mitchy_output(
-                payload=parsed_model_output,
+        try:
+            prompt = build_mitchy_prompt(
+                message=clean_message,
+                profile=profile,
+                recent_history=recent_turns,
                 local_analysis=local_analysis,
-                default_format=default_format,
+                recommended_format=default_format,
+                content_context=content_context,
+                topic_id=topic_id,
+                module_id=module_id,
+                screen_context=screen_context,
             )
-            final_output["metadata"]["used_gemini"] = True
-            final_output["metadata"]["source"] = "gemini"
-        else:
+
+            raw_model_text, gemini_error, model_name = generate_mitchy_json(prompt)
+            parsed_model_output = parse_model_json(raw_model_text)
+
+            if parsed_model_output and _model_payload_has_text(parsed_model_output):
+                final_output = normalize_mitchy_output(
+                    payload=parsed_model_output,
+                    local_analysis=local_analysis,
+                    default_format=default_format,
+                )
+                final_output["metadata"]["used_gemini"] = True
+                final_output["metadata"]["source"] = "gemini"
+            else:
+                final_output = _build_local_only_output(
+                    local_analysis=local_analysis,
+                    default_format=default_format,
+                )
+                final_output["metadata"]["gemini_error"] = (
+                    gemini_error
+                    or "Gemini returned invalid JSON, partial JSON, or an empty response_text"
+                )
+                final_output["metadata"]["source"] = "gemini_failed_local_fallback"
+
+        except Exception as exc:
+            gemini_error = f"{type(exc).__name__}: {str(exc)}"
             final_output = _build_local_only_output(
                 local_analysis=local_analysis,
                 default_format=default_format,
             )
-            final_output["metadata"]["gemini_error"] = gemini_error or "Could not parse Gemini output"
-            final_output["metadata"]["source"] = "gemini_failed_local_fallback"
-
+            final_output["metadata"]["gemini_error"] = gemini_error
+            final_output["metadata"]["source"] = "gemini_exception_local_fallback"
+            final_output["metadata"]["used_gemini"] = False
+    
     else:
         final_output = _build_local_only_output(
             local_analysis=local_analysis,
@@ -260,6 +305,12 @@ def process_mitchy_message(
         }
     )
 
+    final_output = _force_non_empty_output(
+        output=final_output,
+        local_analysis=local_analysis,
+        source="final_non_empty_guard",
+    )
+    
     raw_model_output_for_db: Dict[str, Any] = {
         "raw_text": raw_model_text,
         "parsed": parsed_model_output,
