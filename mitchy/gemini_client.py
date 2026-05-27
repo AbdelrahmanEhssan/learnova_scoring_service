@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -30,15 +30,7 @@ def _call_gemini_once(
     )
 
     body = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "text": prompt,
-                    }
-                ]
-            }
-        ],
+        "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.4,
             "maxOutputTokens": 900,
@@ -47,7 +39,6 @@ def _call_gemini_once(
     }
 
     data = json.dumps(body).encode("utf-8")
-
     request = urllib.request.Request(
         url=url,
         data=data,
@@ -116,7 +107,6 @@ def _build_model_list(primary_model: str) -> list[str]:
         ]
 
     models = [primary_model, *fallback_models]
-
     deduped: list[str] = []
 
     for model in models:
