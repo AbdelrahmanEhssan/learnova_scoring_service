@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any, Dict
 
@@ -14,6 +14,8 @@ VALID_LEARNING_STATES = {
     "external_distraction",
     "burnout_fatigue",
     "human_support",
+    "progressing",
+    "concerned",
 }
 
 VALID_ACTIONS = {
@@ -23,17 +25,21 @@ VALID_ACTIONS = {
     "rescue_explanation",
     "recommend_resource",
     "human_support",
+    "contact_admin",
+    "simplify_problem",
+    "shift_format",
+    "answer_question",
+    "seek_human_support",
+    "domain_refusal",
 }
 
 # Current DB/app-supported formats only.
-# student_profiles.learning_style allows only:
-# Visual, Auditory, Textual
+# student_profiles.learning_style allows only: Visual, Auditory, Textual
 VALID_FORMATS = {
     "visual",
     "auditory",
     "textual",
 }
-
 
 try:
     from mitchy_rescue_agent_edited import normalize_style as rescue_normalize_style
@@ -72,9 +78,11 @@ def normalize_learning_state(value: Any, default: str = "confused") -> str:
         "curious": "curious_inquiry",
         "support": "human_support",
         "needs_human_support": "human_support",
+        "normal": "curious_inquiry",
     }
 
     state = aliases.get(state, state)
+
     return state if state in VALID_LEARNING_STATES else default
 
 
@@ -88,9 +96,14 @@ def normalize_action(value: Any, default: str = "none") -> str:
         "resource": "recommend_resource",
         "support": "human_support",
         "needs_human_support": "human_support",
+        "seek_support": "seek_human_support",
+        "clarify": "rescue_explanation",
+        "answer": "answer_question",
+        "domain_redirect": "domain_refusal",
     }
 
     action = aliases.get(action, action)
+
     return action if action in VALID_ACTIONS else default
 
 
@@ -126,11 +139,13 @@ def normalize_format(value: Any, default: str = "textual") -> str:
     }
 
     fmt = aliases.get(fmt, fmt)
+
     return fmt if fmt in VALID_FORMATS else default
 
 
 def format_to_db_title(value: Any) -> str:
     fmt = normalize_format(value)
+
     return {
         "visual": "Visual",
         "auditory": "Auditory",
@@ -140,7 +155,6 @@ def format_to_db_title(value: Any) -> str:
 
 def profile_to_recommended_format(profile: Dict[str, Any] | None) -> str:
     profile = profile or {}
-
     raw_style = profile.get("learning_style") or "Textual"
 
     return normalize_format(raw_style, default="textual")
@@ -171,7 +185,6 @@ def normalize_mitchy_output(
         local_analysis.get("learning_state"),
         default="confused",
     )
-
     local_action = normalize_action(
         local_analysis.get("suggested_action"),
         default="none",
@@ -181,7 +194,6 @@ def normalize_mitchy_output(
         payload.get("learning_state"),
         default=local_state,
     )
-
     suggested_action = normalize_action(
         payload.get("suggested_action") or payload.get("action"),
         default=local_action,
@@ -199,7 +211,11 @@ def normalize_mitchy_output(
     if not isinstance(metadata, dict):
         metadata = {}
 
-    confidence = clamp_float(payload.get("confidence"), default=0.5)
+    # Keep the uploaded prompt's metadata fields if the model returned them.
+    if "confidence_score" in metadata and "confidence" not in payload:
+        confidence = clamp_float(metadata.get("confidence_score"), default=0.5)
+    else:
+        confidence = clamp_float(payload.get("confidence"), default=0.5)
 
     return {
         "response_text": response_text,
