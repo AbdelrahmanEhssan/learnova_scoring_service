@@ -7,7 +7,7 @@ import urllib.request
 from typing import Optional, Tuple
 
 
-DEFAULT_TIMEOUT_SECONDS = 12
+DEFAULT_TIMEOUT_SECONDS = 6
 
 
 def _env_int(name: str, default: int) -> int:

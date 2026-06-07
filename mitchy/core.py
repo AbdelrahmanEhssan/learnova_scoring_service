@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from typing import Any, Dict, Optional
 
 from affective.chat_logic_v3 import process_chat
@@ -36,6 +38,35 @@ LOW_VALUE_MESSAGES = {
     "brb",
     "afk",
 }
+
+
+def _gemini_enabled() -> bool:
+    return os.getenv("MITCHY_GEMINI_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _remove_unwanted_opening_greeting(text: str) -> str:
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(
+        r"^(hey there!?|hi there!?|hello!?|hey!?|hi!?)\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
+def _polish_output_for_chat_context(
+    output: Dict[str, Any],
+    *,
+    clean_message: str,
+    has_history: bool,
+) -> Dict[str, Any]:
+    # Avoid repeatedly greeting mid-conversation.
+    if has_history and not re.fullmatch(r"\s*(hi+|hey+|hello|salam)\s*[!.?]*\s*", clean_message, flags=re.IGNORECASE):
+        output["response_text"] = _remove_unwanted_opening_greeting(output.get("response_text", ""))
+    return output
 
 
 def _safe_local_analysis(message: str, sentiment_history: list[float]) -> Dict[str, Any]:
@@ -234,8 +265,8 @@ def process_mitchy_message(
     4. Handle greeting/identity/capability questions locally without document_chunks.
     5. Answer progress/status questions from Supabase DB without Gemini.
     6. Answer course-content questions from document_chunks only if retrieval is strong.
-    7. If still needed, call Gemini.
-    8. If Gemini fails, call configured backup providers.
+    7. If still needed, call configured non-Gemini providers first.
+    8. Gemini is optional and disabled by default for chat completions.
     9. If all providers fail, use local fallback.
     10. Save to chat_sessions/chat_messages/student_sentiment_history.
     """
@@ -270,7 +301,10 @@ def process_mitchy_message(
 
     else:
         # 2. Greeting / identity / capability questions. No document_chunks.
-        identity_output = answer_identity_or_smalltalk_if_needed(clean_message)
+        identity_output = answer_identity_or_smalltalk_if_needed(
+            clean_message,
+            has_history=bool(recent_turns),
+        )
 
         if identity_output:
             final_output = identity_output
@@ -317,8 +351,14 @@ def process_mitchy_message(
                             screen_context=screen_context,
                         )
 
-                        raw_model_text, gemini_error, model_name = generate_mitchy_json(prompt)
-                        parsed_model_output = parse_model_json(raw_model_text)
+                        if _gemini_enabled():
+                            raw_model_text, gemini_error, model_name = generate_mitchy_json(prompt)
+                            parsed_model_output = parse_model_json(raw_model_text)
+                        else:
+                            raw_model_text = None
+                            parsed_model_output = None
+                            gemini_error = "Gemini chat completion disabled by MITCHY_GEMINI_ENABLED=false"
+                            model_name = None
 
                         if parsed_model_output and _model_payload_has_text(parsed_model_output):
                             final_output = normalize_mitchy_output(
@@ -401,6 +441,12 @@ def process_mitchy_message(
         output=final_output,
         local_analysis=local_analysis,
         source="final_non_empty_guard",
+    )
+
+    final_output = _polish_output_for_chat_context(
+        final_output,
+        clean_message=clean_message,
+        has_history=bool(recent_turns),
     )
 
     raw_model_output_for_db: Dict[str, Any] = {
