@@ -7,7 +7,7 @@ import urllib.request
 from typing import Any, Dict, Optional, Tuple
 
 
-DEFAULT_TIMEOUT_SECONDS = 12
+DEFAULT_TIMEOUT_SECONDS = 8
 
 
 def _timeout_seconds() -> int:
@@ -106,8 +106,8 @@ def _call_openai_compatible(
             {
                 "role": "system",
                 "content": (
-                    "You are Mitchy, LearNova's friendly learning agent. "
-                    "Answer clearly, briefly, and supportively. Avoid medical/legal/financial certainty."
+                    "You are Mitchy, LearNova's friendly learning assistant. "
+                    "Answer clearly, briefly, and supportively. Do not start with Hey/Hello unless the user only greeted you. Avoid medical/legal/financial certainty."
                 ),
             },
             {

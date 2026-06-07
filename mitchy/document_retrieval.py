@@ -18,7 +18,7 @@ STOPWORDS = {
     "between", "example", "examples", "learn", "lesson", "topic", "module",
 }
 
-# Single-token concepts that are expected in LearnNova's curriculum.
+# Single-token concepts that are expected in LearNova's curriculum.
 # A short query like "java?" is too ambiguous and should not search document_chunks.
 COURSE_SINGLE_TERMS = {
     "python", "sql", "excel", "powerbi", "tableau", "pandas", "numpy",
@@ -295,7 +295,7 @@ def _summarize(rows: List[Dict[str, Any]], message: str) -> str:
 
     # Do not glue unrelated chunks together. One good answer is better than
     # multiple noisy "related notes".
-    return f"From the LearnNova material: {snippets[0]}"
+    return snippets[0]
 
 
 def answer_from_document_chunks(
