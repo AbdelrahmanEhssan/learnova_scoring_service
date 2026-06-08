@@ -51,6 +51,51 @@ CAREER_BY_TRACK = {
 }
 
 
+
+def _answer_xp_system_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:
+    """
+    Explains how XP is calculated. This must be separate from “what is my XP?”
+    because the user may ask about the rule/system, not their current balance.
+    """
+    asks_how_xp_works = _matches_any(
+        text,
+        [
+            r"\bhow\s+.*\bxp\b.*\bcalculate", r"\bhow\s+.*\bxp\b.*\bwork", r"\bxp\s+system\b",
+            r"\bhow\s+do\s+i\s+earn\s+xp\b", r"\bhow\s+is\s+xp\s+calculated\b", r"\bhow\s+xp\s+is\s+calculated\b",
+            r"نظام\s+.*xp", r"ازاي\s+.*xp", r"ازاى\s+.*xp", r"بيتم\s+.*حسب\s+.*xp", r"بيتم\s+.*حساب\s+.*xp",
+            r"xp\s+بيتحسب", r"ال\s*xp\s+بيتحسب", r"اكسب\s+xp", r"ازاي\s+اكسب\s+xp", r"ازاى\s+اكسب\s+xp",
+        ],
+    )
+
+    if not asks_how_xp_works:
+        return None
+
+    context = build_user_context(user_id=user_id)
+    gamification = context.get("gamification") or {}
+    xp_total = gamification.get("xp_total")
+
+    if language == "ar":
+        response = (
+            "نظام الـ XP في LearNova بيتحسب من الأنشطة التعليمية اللي بتكملها: زي إكمال الموارد، حل الكويزات، التحديات، والتقدم في الموضوعات. "
+            "كل نشاط له مكافأة XP محفوظة في النظام، والـ XP الكلي بيكون مجموع المكافآت المعتمدة لحسابك."
+        )
+        if xp_total is not None:
+            response += f" رصيدك الحالي الظاهر عندي هو {xp_total} XP."
+    else:
+        response = (
+            "In LearNova, XP is calculated from completed learning actions such as finishing resources, quizzes, challenges, and topic progress. "
+            "Each activity has an XP reward in the system, and your total XP is the sum of the approved rewards on your account."
+        )
+        if xp_total is not None:
+            response += f" I can currently see {xp_total} XP on your account."
+
+    return _output(
+        response,
+        {"answered_field": "xp_system_explanation", "xp_total_visible": xp_total is not None},
+        language=language,
+    )
+
+
 def _is_uuid(value: Optional[str]) -> bool:
     if not value:
         return False
@@ -458,6 +503,10 @@ def answer_progress_status_question(
 
     if not text:
         return None
+
+    xp_system_answer = _answer_xp_system_question(text=text, user_id=user_id, language=language)
+    if xp_system_answer:
+        return xp_system_answer
 
     rank_answer = _answer_rank_xp_badges_question(text=text, user_id=user_id, language=language)
     if rank_answer:

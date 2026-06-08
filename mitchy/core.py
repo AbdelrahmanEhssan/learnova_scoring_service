@@ -13,6 +13,7 @@ from mitchy.db import (
     save_mitchy_interaction,
 )
 from mitchy.document_retrieval import answer_from_document_chunks
+from mitchy.basic_concepts import answer_basic_concept_if_needed
 from mitchy.gemini_client import generate_mitchy_json
 from mitchy.health_safety import answer_health_safety_if_needed
 from mitchy.identity_responses import answer_identity_or_smalltalk_if_needed
@@ -392,64 +393,103 @@ def process_mitchy_message(
                 model_name = "db_progress_context"
 
             else:
-                # 4. Course-content retrieval from document_chunks. No Gemini.
-                document_output = answer_from_document_chunks(
-                    message=clean_message,
-                    topic_id=topic_id,
-                    screen_context=screen_context,
-                )
+                # 4. Common course concepts in English/Arabic/slang. No provider needed.
+                basic_concept_output = answer_basic_concept_if_needed(clean_message)
 
-                if document_output:
-                    final_output = document_output
-                    model_name = "document_chunks_retrieval"
+                if basic_concept_output:
+                    final_output = basic_concept_output
+                    model_name = "local_basic_concept_response"
 
-                elif _needs_gemini(clean_message, local_analysis):
-                    prompt: Optional[str] = None
+                else:
+                    # 5. Course-content retrieval from document_chunks. No Gemini.
+                    document_output = answer_from_document_chunks(
+                        message=clean_message,
+                        topic_id=topic_id,
+                        screen_context=screen_context,
+                    )
 
-                    try:
-                        prompt = build_mitchy_prompt(
-                            message=clean_message,
-                            profile=profile,
-                            recent_history=recent_turns,
-                            local_analysis=local_analysis,
-                            recommended_format=default_format,
-                            content_context=content_context,
-                            topic_id=topic_id,
-                            module_id=module_id,
-                            screen_context=screen_context,
-                            user_context=rich_user_context,
-                        )
+                    if document_output:
+                        final_output = document_output
+                        model_name = "document_chunks_retrieval"
 
-                        if _gemini_enabled():
-                            raw_model_text, gemini_error, model_name = generate_mitchy_json(prompt)
-                            parsed_model_output = parse_model_json(raw_model_text)
-                        else:
-                            raw_model_text = None
-                            parsed_model_output = None
-                            gemini_error = "Gemini chat completion disabled by MITCHY_GEMINI_ENABLED=false"
-                            model_name = None
-
-                        if parsed_model_output and _model_payload_has_text(parsed_model_output):
-                            final_output = normalize_mitchy_output(
-                                payload=parsed_model_output,
+                    elif _needs_gemini(clean_message, local_analysis):
+                        prompt: Optional[str] = None
+    
+                        try:
+                            prompt = build_mitchy_prompt(
+                                message=clean_message,
+                                profile=profile,
+                                recent_history=recent_turns,
                                 local_analysis=local_analysis,
-                                default_format=default_format,
+                                recommended_format=default_format,
+                                content_context=content_context,
+                                topic_id=topic_id,
+                                module_id=module_id,
+                                screen_context=screen_context,
+                                user_context=rich_user_context,
                             )
-                            final_output["metadata"]["used_gemini"] = True
-                            final_output["metadata"]["source"] = "gemini"
-                        else:
-                            backup_text, backup_provider, backup_error = call_backup_provider(prompt)
-
+    
+                            if _gemini_enabled():
+                                raw_model_text, gemini_error, model_name = generate_mitchy_json(prompt)
+                                parsed_model_output = parse_model_json(raw_model_text)
+                            else:
+                                raw_model_text = None
+                                parsed_model_output = None
+                                gemini_error = "Gemini chat completion disabled by MITCHY_GEMINI_ENABLED=false"
+                                model_name = None
+    
+                            if parsed_model_output and _model_payload_has_text(parsed_model_output):
+                                final_output = normalize_mitchy_output(
+                                    payload=parsed_model_output,
+                                    local_analysis=local_analysis,
+                                    default_format=default_format,
+                                )
+                                final_output["metadata"]["used_gemini"] = True
+                                final_output["metadata"]["source"] = "gemini"
+                            else:
+                                backup_text, backup_provider, backup_error = call_backup_provider(prompt)
+    
+                                if backup_text and backup_provider:
+                                    final_output = _build_provider_output(
+                                        response_text=backup_text,
+                                        provider_name=backup_provider,
+                                        local_analysis=local_analysis,
+                                        default_format=default_format,
+                                        gemini_error=(
+                                            gemini_error
+                                            or "Gemini returned invalid JSON, partial JSON, or an empty response_text"
+                                        ),
+                                    )
+                                    model_name = backup_provider
+                                else:
+                                    final_output = _build_contextual_local_fallback(
+                                        message=clean_message,
+                                        local_analysis=local_analysis,
+                                        default_format=default_format,
+                                        user_context=rich_user_context,
+                                    )
+                                    final_output["metadata"]["gemini_error"] = (
+                                        gemini_error
+                                        or "Gemini returned invalid JSON, partial JSON, or an empty response_text"
+                                    )
+                                    final_output["metadata"]["backup_provider_error"] = backup_error
+                                    final_output["metadata"]["source"] = "gemini_failed_local_fallback"
+    
+                        except Exception as exc:
+                            gemini_error = f"{type(exc).__name__}: {str(exc)}"
+    
+                            if prompt:
+                                backup_text, backup_provider, backup_error = call_backup_provider(prompt)
+                            else:
+                                backup_text, backup_provider, backup_error = None, None, "Prompt was not built"
+    
                             if backup_text and backup_provider:
                                 final_output = _build_provider_output(
                                     response_text=backup_text,
                                     provider_name=backup_provider,
                                     local_analysis=local_analysis,
                                     default_format=default_format,
-                                    gemini_error=(
-                                        gemini_error
-                                        or "Gemini returned invalid JSON, partial JSON, or an empty response_text"
-                                    ),
+                                    gemini_error=gemini_error,
                                 )
                                 model_name = backup_provider
                             else:
@@ -459,49 +499,18 @@ def process_mitchy_message(
                                     default_format=default_format,
                                     user_context=rich_user_context,
                                 )
-                                final_output["metadata"]["gemini_error"] = (
-                                    gemini_error
-                                    or "Gemini returned invalid JSON, partial JSON, or an empty response_text"
-                                )
+                                final_output["metadata"]["gemini_error"] = gemini_error
                                 final_output["metadata"]["backup_provider_error"] = backup_error
-                                final_output["metadata"]["source"] = "gemini_failed_local_fallback"
-
-                    except Exception as exc:
-                        gemini_error = f"{type(exc).__name__}: {str(exc)}"
-
-                        if prompt:
-                            backup_text, backup_provider, backup_error = call_backup_provider(prompt)
-                        else:
-                            backup_text, backup_provider, backup_error = None, None, "Prompt was not built"
-
-                        if backup_text and backup_provider:
-                            final_output = _build_provider_output(
-                                response_text=backup_text,
-                                provider_name=backup_provider,
-                                local_analysis=local_analysis,
-                                default_format=default_format,
-                                gemini_error=gemini_error,
-                            )
-                            model_name = backup_provider
-                        else:
-                            final_output = _build_contextual_local_fallback(
-                                message=clean_message,
-                                local_analysis=local_analysis,
-                                default_format=default_format,
-                                user_context=rich_user_context,
-                            )
-                            final_output["metadata"]["gemini_error"] = gemini_error
-                            final_output["metadata"]["backup_provider_error"] = backup_error
-                            final_output["metadata"]["source"] = "gemini_exception_local_fallback"
-                            final_output["metadata"]["used_gemini"] = False
-                else:
-                    final_output = _build_contextual_local_fallback(
-                        message=clean_message,
-                        local_analysis=local_analysis,
-                        default_format=default_format,
-                        user_context=rich_user_context,
-                    )
-                    model_name = "contextual_local_fallback"
+                                final_output["metadata"]["source"] = "gemini_exception_local_fallback"
+                                final_output["metadata"]["used_gemini"] = False
+                    else:
+                        final_output = _build_contextual_local_fallback(
+                            message=clean_message,
+                            local_analysis=local_analysis,
+                            default_format=default_format,
+                            user_context=rich_user_context,
+                        )
+                        model_name = "contextual_local_fallback"
 
     final_output = _attach_context_metadata(
         final_output,
