@@ -47,6 +47,8 @@ NON_RETRIEVAL_PATTERNS = [
     r"\bafter\s+finishing\b", r"\bwhere\s+can\s+i\s+work\b", r"\bwhat\s+is\s+my\s+job\b",
     r"\bcareer\b", r"\bjobs?\b", r"\bemployment\b", r"\bdata\s+analytics\s+job\b",
     r"انت\s+مين", r"مين\s+انت", r"من\s+انت", r"اتكلم\s+.*عربي", r"بتفهم\s+عربي",
+    r"ابدا", r"ابدأ", r"اذاكر", r"أذاكر", r"تايه", r"خطة", r"النهارده", r"انهارده",
+    r"اشتغل", r"وظيف", r"كارير", r"بعد\s+.*التراك", r"نظام\s+.*xp", r"ازاي\s+.*xp", r"ازاى\s+.*xp",
 ]
 
 PROMO_PATTERNS = [
@@ -87,9 +89,9 @@ def _limit() -> int:
 
 def _global_min_score() -> int:
     try:
-        return max(3, int(os.getenv("MITCHY_DOCUMENT_RETRIEVAL_GLOBAL_MIN_SCORE", "3")))
+        return max(4, int(os.getenv("MITCHY_DOCUMENT_RETRIEVAL_GLOBAL_MIN_SCORE", "4")))
     except Exception:
-        return 2
+        return 4
 
 
 def _topic_min_score() -> int:
