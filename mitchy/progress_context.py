@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from mitchy.db import fetch_content_context, fetch_student_profile
+from mitchy.language_utils import detect_language, normalize_for_intent, response_for_language
+from mitchy.user_context import build_user_context
 from services.supabase_client import supabase
 
 
@@ -28,6 +30,24 @@ TRACK_TO_COURSE_KEYS = {
     "DA": ["DA", "Data Analytics", "dip_data_analytics"],
     "DE": ["DE", "Data Engineering", "dip_data_engineering"],
     "DS": ["DS", "Data Science", "dip_data_science"],
+}
+
+CAREER_BY_TRACK = {
+    "DA": {
+        "label": "Data Analytics",
+        "jobs": ["Data Analyst", "Business Intelligence Analyst", "Reporting Analyst", "Product Analyst", "Marketing/Data Insights Analyst"],
+        "work": "You usually clean data, analyze trends, build dashboards, explain insights, and help teams make decisions.",
+    },
+    "DE": {
+        "label": "Data Engineering",
+        "jobs": ["Data Engineer", "Analytics Engineer", "ETL/ELT Developer", "Data Platform Engineer", "Pipeline Engineer"],
+        "work": "You usually build pipelines, manage databases/warehouses, automate data movement, and make data reliable for analysts and scientists.",
+    },
+    "DS": {
+        "label": "Data Science",
+        "jobs": ["Data Scientist", "Machine Learning Engineer", "ML Analyst", "AI/ML Specialist", "Research/Data Science Analyst"],
+        "work": "You usually build models, test hypotheses, evaluate predictions, and turn data into intelligent products or decisions.",
+    },
 }
 
 
@@ -55,7 +75,7 @@ def _safe_rows(data: Any) -> List[Dict[str, Any]]:
     return [row for row in data if isinstance(row, dict)]
 
 
-def _output(text: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+def _output(text: str, metadata: Dict[str, Any], *, language: str = "en") -> Dict[str, Any]:
     return {
         "response_text": text,
         "learning_state": "progressing",
@@ -68,13 +88,14 @@ def _output(text: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "metadata": {
             "source": "db_progress_context",
             "used_gemini": False,
+            "detected_language": language,
             **metadata,
         },
     }
 
 
 def _matches_any(text: str, patterns: list[str]) -> bool:
-    return any(re.search(pattern, text) for pattern in patterns)
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
 def _fetch_latest_learning_position(user_id: str) -> Dict[str, Any]:
@@ -86,7 +107,7 @@ def _fetch_latest_learning_position(user_id: str) -> Dict[str, Any]:
         "learning_style": profile.get("learning_style"),
         "learning_mode": profile.get("learning_mode"),
         "current_level_index": profile.get("current_level_index"),
-        "xp_total": profile.get("xp_total"),
+        "xp_total": profile.get("xp_total") or profile.get("xp_points") or profile.get("total_xp") or profile.get("xp"),
         "onboarding_complete": profile.get("onboarding_complete"),
     }
 
@@ -114,7 +135,6 @@ def _fetch_course_for_track(track_code: Optional[str]) -> Dict[str, Any]:
 
     candidates = TRACK_TO_COURSE_KEYS.get(track_code, [track_code])
 
-    # Fast path: exact track/key matching.
     for candidate in candidates:
         try:
             response = (
@@ -131,7 +151,6 @@ def _fetch_course_for_track(track_code: Optional[str]) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Fallback: title search.
     for title_part in TRACK_TO_COURSE_TITLES.get(track_code, []):
         try:
             response = (
@@ -227,12 +246,114 @@ def _format_topic_list(topics: List[Dict[str, Any]], limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+def _answer_rank_xp_badges_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:
+    is_question = _matches_any(
+        text,
+        [
+            r"\bmy\s+rank\b", r"\bwhat\s+is\s+my\s+rank\b", r"\brank\b",
+            r"\bxp\b", r"\bpoints?\b", r"\bleaderboard\b", r"\bbadges?\b", r"\bperks?\b",
+            r"\bnext\s+level\b", r"\bnext\s+badge\b",
+            r"الرانك", r"ترتيب", r"نقاط", r"اكس\s*بي", r"بادج", r"شارة",
+        ],
+    )
+    if not is_question:
+        return None
+
+    context = build_user_context(user_id=user_id)
+    gamification = context.get("gamification") or {}
+    rank = gamification.get("rank")
+    badges = gamification.get("badges") or []
+    perks = gamification.get("perks") or []
+    xp_total = gamification.get("xp_total")
+    xp_to_next = gamification.get("xp_to_next_level")
+
+    parts: List[str] = []
+    if xp_total is not None:
+        parts.append(response_for_language(f"XP: {xp_total}", f"الـ XP: {xp_total}", language))
+
+    if isinstance(rank, dict) and rank:
+        for key in ("rank", "position", "leaderboard_rank", "current_rank"):
+            if rank.get(key) is not None:
+                parts.append(response_for_language(f"Rank: {rank[key]}", f"الرانك: {rank[key]}", language))
+                break
+
+    if xp_to_next is not None:
+        parts.append(response_for_language(f"XP to next level: {xp_to_next}", f"باقي للمرحلة اللي بعدها: {xp_to_next} XP", language))
+
+    if badges:
+        parts.append(response_for_language(f"Badges earned: {len(badges)}", f"الشارات المكتسبة: {len(badges)}", language))
+
+    if perks:
+        parts.append(response_for_language(f"Available perks: {len(perks)}", f"المميزات المتاحة: {len(perks)}", language))
+
+    if not parts:
+        text_out = response_for_language(
+            "I can answer rank, XP, badges, and perks once those rows are available in the LearNova gamification tables. Right now, I can see your learning profile, but I could not find saved rank/XP data for your account.",
+            "أقدر أجاوب عن الرانك والـ XP والشارات والمميزات لما الداتا تكون متسجلة في جداول LearNova. حاليًا شايف بروفايل التعلم، لكن مش لاقي بيانات رانك/XP محفوظة لحسابك.",
+            language,
+        )
+    else:
+        text_out = response_for_language(
+            "Here is what I found for your LearNova progress: " + " | ".join(parts),
+            "ده اللي لقيته عن تقدمك في LearNova: " + " | ".join(parts),
+            language,
+        )
+
+    return _output(text_out, {"answered_field": "gamification", "gamification_found": bool(parts)}, language=language)
+
+
+def _answer_career_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:
+    is_career = _matches_any(
+        text,
+        [
+            r"\bafter\s+finishing\b", r"\bwhere\s+can\s+i\s+work\b", r"\bwhat\s+is\s+my\s+job\b",
+            r"\bjobs?\b", r"\bcareer\b", r"\bwork\b", r"\bhired\b", r"\bemployment\b",
+            r"\bdata\s+analytics\s+job\b", r"\bdata\s+analyst\s+job\b",
+        ],
+    )
+    if not is_career:
+        return None
+
+    position = _fetch_latest_learning_position(user_id)
+    track_code = _normalize_track(position.get("assigned_track")) or "DA"
+
+    if "data engineering" in text:
+        track_code = "DE"
+    elif "data science" in text:
+        track_code = "DS"
+    elif "data analytics" in text or "data analyst" in text:
+        track_code = "DA"
+
+    career = CAREER_BY_TRACK.get(track_code, CAREER_BY_TRACK["DA"])
+    jobs = ", ".join(career["jobs"][:5])
+
+    if language == "ar":
+        response = (
+            f"بعد {career['label']} تقدر تشتغل في أدوار زي: {jobs}. "
+            f"الشغل الأساسي بيكون: {career['work']} "
+            "أفضل خطوة الآن هي تقوّي SQL وExcel/Power BI وPython وتبني 2–3 مشاريع تعرضهم في البورتفوليو."
+        )
+    else:
+        response = (
+            f"After the {career['label']} track, common roles include: {jobs}. "
+            f"In simple terms, {career['work']} "
+            "Your best next step is to strengthen SQL, Excel/Power BI, Python, and build 2–3 portfolio projects."
+        )
+
+    return _output(
+        response,
+        {"answered_field": "career_path", "resolved_track": track_code},
+        language=language,
+    )
+
+
 def _answer_learning_path_question(
     *,
     text: str,
     user_id: str,
     topic_id: Optional[str],
     module_id: Optional[str],
+    language: str,
 ) -> Optional[Dict[str, Any]]:
     is_learning_path_question = _matches_any(
         text,
@@ -261,7 +382,6 @@ def _answer_learning_path_question(
     context = fetch_content_context(topic_id=topic_id, module_id=module_id)
     track_code = _normalize_track(position.get("assigned_track"))
 
-    # If the user explicitly asks about a track by name, use that track.
     if "data analytics" in text:
         track_code = "DA"
     elif "data engineering" in text:
@@ -285,26 +405,40 @@ def _answer_learning_path_question(
 
     if not topics:
         return _output(
-            "I found your track, but I could not load its topic list yet. Please open your track map and ask me again.",
+            response_for_language(
+                "I found your track, but I could not load its topic list yet. Please open your track map and ask me again.",
+                "لقيت التراك بتاعك، لكن مش قادر أحمل قائمة الموضوعات حاليًا. افتح خريطة التراك واسألني تاني.",
+                language,
+            ),
             metadata,
+            language=language,
         )
 
     topic_list = _format_topic_list(topics, limit=8)
     total = len(topics)
 
-    response = (
-        f"For your {track_label} track, start with these topics:\n"
-        f"{topic_list}"
+    response = response_for_language(
+        f"For your {track_label} track, start with these topics:\n{topic_list}",
+        f"في تراك {track_label}، ابدأ بالموضوعات دي:\n{topic_list}",
+        language,
     )
 
     if total > 8:
-        response += f"\nThere are {total} topics in this path, so we can continue step by step."
+        response += response_for_language(
+            f"\nThere are {total} topics in this path, so we can continue step by step.",
+            f"\nفيه {total} موضوع في المسار ده، ونقدر نمشي عليهم خطوة خطوة.",
+            language,
+        )
 
     current_topic = (context.get("topic") or {}).get("title")
     if current_topic:
-        response += f"\nYour current topic is {current_topic}, so continue from there first."
+        response += response_for_language(
+            f"\nYour current topic is {current_topic}, so continue from there first.",
+            f"\nموضوعك الحالي هو {current_topic}، فالأفضل تكمل منه الأول.",
+            language,
+        )
 
-    return _output(response, metadata)
+    return _output(response, metadata, language=language)
 
 
 def answer_progress_status_question(
@@ -315,19 +449,30 @@ def answer_progress_status_question(
     module_id: Optional[str],
 ) -> Optional[Dict[str, Any]]:
     """
-    Answers progress, roadmap, and status questions from Supabase DB.
+    Answers progress, roadmap, rank/XP, career, and status questions from Supabase DB/local track logic.
     """
 
-    text = str(message or "").strip().lower()
+    original = str(message or "").strip()
+    text = normalize_for_intent(original)
+    language = detect_language(original)
 
     if not text:
         return None
+
+    rank_answer = _answer_rank_xp_badges_question(text=text, user_id=user_id, language=language)
+    if rank_answer:
+        return rank_answer
+
+    career_answer = _answer_career_question(text=text, user_id=user_id, language=language)
+    if career_answer:
+        return career_answer
 
     learning_path_answer = _answer_learning_path_question(
         text=text,
         user_id=user_id,
         topic_id=topic_id,
         module_id=module_id,
+        language=language,
     )
     if learning_path_answer:
         return learning_path_answer
@@ -340,6 +485,7 @@ def answer_progress_status_question(
             r"\bmy\s+track\b", r"\bwhat\s+module\b", r"\bwhich\s+module\b",
             r"\bmodule\s+am\s+i\b", r"\bwhat\s+level\b", r"\bwhich\s+level\b",
             r"\blevel\s+am\s+i\b", r"\bmy\s+progress\b", r"\bwhere\s+am\s+i\b",
+            r"تراكي", r"التراك", r"المستوى", r"الموديول", r"التقدم",
         ],
     )
 
@@ -364,54 +510,84 @@ def answer_progress_status_question(
         "course_found": bool(course),
     }
 
-    if "track" in text:
+    if "track" in text or "تراك" in text:
         assigned_track = position.get("assigned_track") or course.get("track")
         label = TRACK_LABELS.get(str(assigned_track), assigned_track)
 
         if label:
             return _output(
-                f"You are currently assigned to the {label} track.",
+                response_for_language(
+                    f"You are currently assigned to the {label} track.",
+                    f"أنت حاليًا متسجل في تراك {label}.",
+                    language,
+                ),
                 {**metadata, "answered_field": "assigned_track", "assigned_track": assigned_track},
+                language=language,
             )
 
         return _output(
-            "I could not find your assigned track in the database yet.",
+            response_for_language(
+                "I could not find your assigned track in the database yet.",
+                "مش قادر ألاقي التراك المتسجل لحسابك في قاعدة البيانات حاليًا.",
+                language,
+            ),
             {**metadata, "answered_field": "assigned_track_missing"},
+            language=language,
         )
 
-    if "topic" in text:
+    if "topic" in text or "موضوع" in text:
         title = topic.get("title")
         order_index = topic.get("order_index")
 
         if title:
             extra = f" It is topic #{order_index} in this module." if order_index is not None else ""
             return _output(
-                f"You are currently in the topic: {title}.{extra}",
+                response_for_language(
+                    f"You are currently in the topic: {title}.{extra}",
+                    f"أنت حاليًا في موضوع: {title}.",
+                    language,
+                ),
                 {**metadata, "answered_field": "topic"},
+                language=language,
             )
 
         return _output(
-            "I do not have the current topic context yet. Open a topic page and ask me again there.",
+            response_for_language(
+                "I do not have the current topic context yet. Open a topic page and ask me again there.",
+                "معنديش سياق الموضوع الحالي دلوقتي. افتح صفحة الموضوع واسألني هناك.",
+                language,
+            ),
             {**metadata, "answered_field": "topic_missing"},
+            language=language,
         )
 
-    if "module" in text:
+    if "module" in text or "موديول" in text:
         title = module.get("title")
         order_index = module.get("order_index")
 
         if title:
             extra = f" It is module #{order_index} in this level." if order_index is not None else ""
             return _output(
-                f"You are currently in the module: {title}.{extra}",
+                response_for_language(
+                    f"You are currently in the module: {title}.{extra}",
+                    f"أنت حاليًا في موديول: {title}.",
+                    language,
+                ),
                 {**metadata, "answered_field": "module"},
+                language=language,
             )
 
         return _output(
-            "I do not have the current module context yet. Open a module or topic page and ask me again.",
+            response_for_language(
+                "I do not have the current module context yet. Open a module or topic page and ask me again.",
+                "معنديش سياق الموديول الحالي دلوقتي. افتح صفحة موديول أو موضوع واسألني تاني.",
+                language,
+            ),
             {**metadata, "answered_field": "module_missing"},
+            language=language,
         )
 
-    if "level" in text:
+    if "level" in text or "مستوى" in text:
         title = level.get("title")
         order_index = level.get("order_index")
         profile_level = position.get("current_level_index")
@@ -419,19 +595,34 @@ def answer_progress_status_question(
         if title:
             extra = f" It is level #{order_index}." if order_index is not None else ""
             return _output(
-                f"You are currently in the level: {title}.{extra}",
+                response_for_language(
+                    f"You are currently in the level: {title}.{extra}",
+                    f"أنت حاليًا في مستوى: {title}.",
+                    language,
+                ),
                 {**metadata, "answered_field": "level"},
+                language=language,
             )
 
         if profile_level is not None:
             return _output(
-                f"Your profile says your current level index is {profile_level}.",
+                response_for_language(
+                    f"Your profile says your current level index is {profile_level}.",
+                    f"البروفايل بيقول إن رقم المستوى الحالي هو {profile_level}.",
+                    language,
+                ),
                 {**metadata, "answered_field": "current_level_index"},
+                language=language,
             )
 
         return _output(
-            "I could not find your current level in the database yet.",
+            response_for_language(
+                "I could not find your current level in the database yet.",
+                "مش قادر ألاقي المستوى الحالي في قاعدة البيانات حاليًا.",
+                language,
+            ),
             {**metadata, "answered_field": "level_missing"},
+            language=language,
         )
 
     parts: list[str] = []
@@ -456,11 +647,21 @@ def answer_progress_status_question(
 
     if parts:
         return _output(
-            "Here is what I found about your current progress: " + " | ".join(parts),
+            response_for_language(
+                "Here is what I found about your current progress: " + " | ".join(parts),
+                "ده اللي لقيته عن تقدمك الحالي: " + " | ".join(parts),
+                language,
+            ),
             {**metadata, "answered_field": "progress_summary"},
+            language=language,
         )
 
     return _output(
-        "I could not find enough progress data yet. Try opening your current lesson page and ask me again.",
+        response_for_language(
+            "I could not find enough progress data yet. Try opening your current lesson page and ask me again.",
+            "مش لاقي بيانات كفاية عن تقدمك حاليًا. افتح صفحة الدرس الحالي واسألني تاني.",
+            language,
+        ),
         {**metadata, "answered_field": "progress_missing"},
+        language=language,
     )
