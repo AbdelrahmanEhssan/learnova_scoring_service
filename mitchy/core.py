@@ -20,6 +20,8 @@ from mitchy.parsing import parse_model_json
 from mitchy.progress_context import answer_progress_status_question
 from mitchy.prompting import build_mitchy_prompt
 from mitchy.provider_client import call_backup_provider
+from mitchy.language_utils import detect_language, gentle_fallback_text, normalize_for_intent, response_for_language
+from mitchy.user_context import build_user_context
 from mitchy.schemas import (
     normalize_mitchy_output,
     profile_to_recommended_format,
@@ -148,6 +150,64 @@ def _build_local_only_output(
     return output
 
 
+
+
+def _is_career_or_language_or_identity_like(message: str) -> bool:
+    text = normalize_for_intent(message)
+    return any(
+        phrase in text
+        for phrase in (
+            "who are you",
+            "can you speak arabic",
+            "do you understand arabic",
+            "where can i work",
+            "what is my job",
+            "after finishing",
+            "data analytics job",
+            "career",
+        )
+    )
+
+
+def _build_contextual_local_fallback(
+    *,
+    message: str,
+    local_analysis: Dict[str, Any],
+    default_format: str,
+    user_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    language = detect_language(message)
+    track_label = ((user_context.get("track") or {}).get("track_label") or "your track")
+
+    text = gentle_fallback_text(language)
+
+    if _is_career_or_language_or_identity_like(message):
+        text = response_for_language(
+            f"I can help, but I don’t want to guess. You are currently connected to the {track_label} path, so ask me about a specific role, topic, XP/rank, or next learning step.",
+            f"أقدر أساعدك، بس مش عايز أخمّن. أنت حاليًا مرتبط بمسار {track_label}، فاسألني عن وظيفة معينة، موضوع، XP/رانك، أو الخطوة اللي بعدها.",
+            language,
+        )
+
+    output = normalize_mitchy_output(
+        payload={
+            "response_text": text,
+            "learning_state": local_analysis.get("learning_state", "curious_inquiry"),
+            "suggested_action": local_analysis.get("suggested_action", "none"),
+            "recommended_format": default_format,
+            "confidence": 0.5,
+            "metadata": {
+                "source": "contextual_local_fallback",
+                "detected_language": language,
+            },
+        },
+        local_analysis=local_analysis,
+        default_format=default_format,
+    )
+    output["metadata"]["used_gemini"] = False
+    output["metadata"]["source"] = "contextual_local_fallback"
+    return output
+
+
 def _model_payload_has_text(payload: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -164,11 +224,11 @@ def _force_non_empty_output(
 ) -> Dict[str, Any]:
     fallback_text = str(
         local_analysis.get("response_text")
-        or "I’m here with you. Tell me what part feels unclear, and we’ll break it down step by step."
+        or "I’m here with you. Ask me one specific question and I’ll help step by step."
     ).strip()
 
     if not fallback_text:
-        fallback_text = "I’m here with you. Tell me what part feels unclear, and we’ll break it down step by step."
+        fallback_text = "I’m here with you. Ask me one specific question and I’ll help step by step."
 
     response_text = output.get("response_text")
 
@@ -277,6 +337,14 @@ def process_mitchy_message(
         raise ValueError("Message cannot be empty")
 
     profile = fetch_student_profile(user_id)
+    rich_user_context = build_user_context(
+        user_id=user_id,
+        user_email=user_email,
+        full_name=full_name,
+        topic_id=topic_id,
+        module_id=module_id,
+        profile=profile,
+    )
     recent_turns = fetch_recent_mitchy_turns(user_id=user_id, limit=12)
     sentiment_history = fetch_recent_sentiment_scores(user_id=user_id, limit=8)
     content_context = fetch_content_context(topic_id=topic_id, module_id=module_id)
@@ -349,6 +417,7 @@ def process_mitchy_message(
                             topic_id=topic_id,
                             module_id=module_id,
                             screen_context=screen_context,
+                            user_context=rich_user_context,
                         )
 
                         if _gemini_enabled():
@@ -384,9 +453,11 @@ def process_mitchy_message(
                                 )
                                 model_name = backup_provider
                             else:
-                                final_output = _build_local_only_output(
+                                final_output = _build_contextual_local_fallback(
+                                    message=clean_message,
                                     local_analysis=local_analysis,
                                     default_format=default_format,
+                                    user_context=rich_user_context,
                                 )
                                 final_output["metadata"]["gemini_error"] = (
                                     gemini_error
@@ -413,20 +484,24 @@ def process_mitchy_message(
                             )
                             model_name = backup_provider
                         else:
-                            final_output = _build_local_only_output(
+                            final_output = _build_contextual_local_fallback(
+                                message=clean_message,
                                 local_analysis=local_analysis,
                                 default_format=default_format,
+                                user_context=rich_user_context,
                             )
                             final_output["metadata"]["gemini_error"] = gemini_error
                             final_output["metadata"]["backup_provider_error"] = backup_error
                             final_output["metadata"]["source"] = "gemini_exception_local_fallback"
                             final_output["metadata"]["used_gemini"] = False
                 else:
-                    final_output = _build_local_only_output(
+                    final_output = _build_contextual_local_fallback(
+                        message=clean_message,
                         local_analysis=local_analysis,
                         default_format=default_format,
+                        user_context=rich_user_context,
                     )
-                    model_name = "local_affective_logic"
+                    model_name = "contextual_local_fallback"
 
     final_output = _attach_context_metadata(
         final_output,
@@ -436,6 +511,7 @@ def process_mitchy_message(
         profile=profile,
         content_context=content_context,
     )
+    final_output.setdefault("metadata", {})["user_context_attached_to_provider_prompt"] = True
 
     final_output = _force_non_empty_output(
         output=final_output,

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from services.supabase_client import supabase
+from mitchy.language_utils import has_arabic, normalize_for_intent
 
 
 STOPWORDS = {
@@ -16,6 +17,8 @@ STOPWORDS = {
     "were", "will", "would", "should", "could", "please", "simple", "simply",
     "tell", "about", "explain", "define", "meaning", "mean", "difference",
     "between", "example", "examples", "learn", "lesson", "topic", "module",
+    "so", "after", "finishing", "finish", "finished", "track", "job", "jobs",
+    "work", "career", "role", "roles", "hired", "employment", "where", "next",
 }
 
 # Single-token concepts that are expected in LearNova's curriculum.
@@ -38,7 +41,12 @@ RETRIEVAL_TRIGGERS = [
 NON_RETRIEVAL_PATTERNS = [
     r"^hi+$", r"^hey+$", r"^hello+$", r"^ok(?:ay)?$",
     r"^thanks?$", r"^thank\s+you$",
-    r"\bwhat\s+is\s+your\s+name\b", r"\bwho\s+are\s+you\b", r"\byour\s+name\b",
+    r"\bwhat\s+is\s+your\s+name\b", r"\bwho\s+are\s+you\b", r"\bwho\s+r\s+u\b", r"\byour\s+name\b",
+    r"\bwhat\s+is\s+my\s+rank\b", r"\bmy\s+rank\b", r"\bmy\s+track\b", r"\bwhat\s+is\s+my\s+track\b",
+    r"\bwhat\s+should\s+i\s+learn\b", r"\bwhat\s+should\s+i\s+study\b",
+    r"\bafter\s+finishing\b", r"\bwhere\s+can\s+i\s+work\b", r"\bwhat\s+is\s+my\s+job\b",
+    r"\bcareer\b", r"\bjobs?\b", r"\bemployment\b", r"\bdata\s+analytics\s+job\b",
+    r"انت\s+مين", r"مين\s+انت", r"من\s+انت", r"اتكلم\s+.*عربي", r"بتفهم\s+عربي",
 ]
 
 PROMO_PATTERNS = [
@@ -52,6 +60,8 @@ BAD_LOW_CONTEXT_PHRASES = [
     "apply colors to cells",
     "font color goes for both numbers and text",
 ]
+
+CAREER_OR_PROGRESS_WORDS = {"job", "jobs", "career", "work", "employment", "hired", "rank", "xp", "badge", "badges", "perk", "perks", "track"}
 
 
 def _is_uuid(value: Optional[str]) -> bool:
@@ -77,7 +87,7 @@ def _limit() -> int:
 
 def _global_min_score() -> int:
     try:
-        return max(2, int(os.getenv("MITCHY_DOCUMENT_RETRIEVAL_GLOBAL_MIN_SCORE", "2")))
+        return max(3, int(os.getenv("MITCHY_DOCUMENT_RETRIEVAL_GLOBAL_MIN_SCORE", "3")))
     except Exception:
         return 2
 
@@ -119,14 +129,23 @@ def _has_retrieval_trigger(message: str) -> bool:
 
 def _should_attempt_retrieval(message: str, topic_id: Optional[str], screen_context: Optional[str]) -> Tuple[bool, str, List[str]]:
     clean_message = _normalize_text(message)
-    text = clean_message.lower()
-    keywords = _keywords(clean_message)
+    normalized_intent = normalize_for_intent(clean_message)
+    text = normalized_intent.lower()
+    keywords = _keywords(normalized_intent)
 
     if not clean_message:
         return False, "empty_message", keywords
 
-    if _is_non_retrieval_message(clean_message):
-        return False, "non_retrieval_identity_or_greeting", keywords
+    # Arabic questions should go to local Arabic handlers/provider unless topic context is explicitly available.
+    # The current document_chunks keyword retriever is English-only and otherwise returns random English chunks.
+    if has_arabic(clean_message) and not (topic_id and _is_uuid(topic_id)):
+        return False, "arabic_global_query_skips_keyword_retrieval", keywords
+
+    if _is_non_retrieval_message(clean_message) or _is_non_retrieval_message(normalized_intent):
+        return False, "non_retrieval_identity_progress_or_career", keywords
+
+    if any(word in CAREER_OR_PROGRESS_WORDS for word in keywords) and not (topic_id and _is_uuid(topic_id)):
+        return False, "career_or_progress_query_should_use_db_or_provider", keywords
 
     if len(clean_message) < 8:
         return False, "message_too_short", keywords
