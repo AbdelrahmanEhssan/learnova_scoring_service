@@ -11,48 +11,37 @@ from mitchy.language_utils import (
     response_for_language,
 )
 
-
 IDENTITY_PATTERNS = [
-    r"\bwhat\s+is\s+your\s+name\b",
-    r"\bwho\s+are\s+you\b",
-    r"\bwho\s+are\s+u\b",
-    r"\bwho\s+r\s+u\b",
-    r"\bwho\s+you\b",
-    r"\byour\s+name\b",
-    r"\bare\s+you\s+mitchy\b",
-    r"\bwhat\s+do\s+i\s+call\s+you\b",
-    r"\byasta\s+enta\s+(men|meen)\b",
-    r"\benta\s+(men|meen)\b",
-    r"\bmeen\s+enta\b",
-    r"انت\s+مين",
-    r"انتا\s+مين",
-    r"مين\s+انت",
-    r"من\s+انت",
-    r"مين\s+انتا",
+    r"\bwhat\s+is\s+your\s+name\b", r"\bwho\s+are\s+you\b", r"\bwho\s+you\b",
+    r"\byour\s+name\b", r"\bare\s+you\s+mitchy\b", r"\bwhat\s+do\s+i\s+call\s+you\b",
+    r"\byasta\s+enta\s+(men|meen)\b", r"\benta\s+(men|meen)\b", r"\bmeen\s+enta\b",
+    r"انت\s+مين", r"انتا\s+مين", r"مين\s+انت", r"من\s+انت", r"مين\s+انتا", r"انت\s+من",
 ]
 
 GREETING_PATTERNS = [
     r"^hi+$", r"^hey+$", r"^hello+$", r"^hello\s+mitchy$", r"^hi\s+mitchy$", r"^hey\s+mitchy$",
-    r"^salam+$", r"^السلام\s+عليكم$", r"^سلام$", r"^اهلا$", r"^اهلين$",
+    r"^salam+$", r"^السلام\s+عليكم$", r"^سلام$", r"^اهلا$", r"^اهلين$", r"^هاي$",
 ]
 
 MITCHY_PING_PATTERNS = [
     r"^mitchy\??$", r"^mitchy\s+\?$", r"^are\s+you\s+there\??$", r"^you\s+there\??$", r"^u\s+there\??$",
+    r"^yo\s+mitchy\s+you\s+still\s+with\s+me\??$",
 ]
 
 CASUAL_CHECK_PATTERNS = [
-    r"^yasta\s+enta\s+tmm\??$", r"^enta\s+tmm\??$", r"^how\s+are\s+you\??$", r"^how\s+r\s+u\??$",
+    r"^yasta\s+enta\s+tmm\??$", r"^enta\s+tmm\??$", r"^how\s+are\s+you\??$",
     r"^are\s+you\s+ok\??$", r"^are\s+you\s+okay\??$", r"انت\s+عامل\s+ايه", r"عامل\s+ايه",
 ]
 
 LANGUAGE_PATTERNS = [
     r"\bcan\s+you\s+speak\s+arabic\b", r"\bdo\s+you\s+understand\s+arabic\b", r"\bdo\s+you\s+speak\s+arabic\b",
     r"\bunderstand\s+arabic\b", r"\bspeak\s+arabic\b", r"\bany\s+different\s+language\b",
-    r"اتكلم\s+.*عربي", r"تكلم\s+.*عربي", r"تتكلم\s+.*عربي", r"بتفهم\s+عربي", r"تفهم\s+عربي", r"تعرف\s+عربي",
+    r"اتكلم\s+.*عربي", r"تكلم\s+.*عربي", r"تتكلم\s+.*عربي", r"تكمل\s+.*عربي",
+    r"بتفهم\s+عربي", r"تفهم\s+عربي", r"تعرف\s+عربي", r"بتعرف\s+عربي", r"ممكن\s+.*عربي",
 ]
 
 CAPABILITY_PATTERNS = [
-    r"\bwhat\s+can\s+you\s+do\b", r"\bhow\s+can\s+you\s+help\b", r"\bhelp\s+me\b",
+    r"\bwhat\s+can\s+you\s+do\b", r"\bhow\s+can\s+you\s+help\b",
 ]
 
 
@@ -89,18 +78,26 @@ def answer_identity_or_smalltalk_if_needed(message: str, *, has_history: bool = 
         return _output(mitchy_identity_text(language), source="local_identity_response", language=language)
 
     if _matches_any(text, GREETING_PATTERNS) or _matches_any(original, GREETING_PATTERNS):
-        return _output(mitchy_identity_text(language), source="local_greeting_response", language=language)
+        if has_history:
+            text_out = response_for_language(
+                "I’m here with you. What would you like to work on next?",
+                "أنا معاك. تحب نشتغل على إيه دلوقتي؟",
+                language,
+            )
+        else:
+            text_out = mitchy_identity_text(language)
+        return _output(text_out, source="local_greeting_response", language=language)
 
     if _matches_any(text, MITCHY_PING_PATTERNS):
-        return _output(response_for_language("I’m here. What would you like to continue with?", "أنا موجود. تحب نكمل في إيه؟", language), source="local_smalltalk_response", language=language)
+        return _output(response_for_language("I’m here with you. What would you like to continue?", "أنا موجود معاك. تحب نكمل في إيه؟", language), source="local_smalltalk_response", language=language)
 
     if _matches_any(text, CASUAL_CHECK_PATTERNS) or _matches_any(original, CASUAL_CHECK_PATTERNS):
         return _output(response_for_language("I’m good and ready to help. What do you want to work on?", "أنا تمام وجاهز أساعدك. تحب نشتغل على إيه؟", language), source="local_smalltalk_response", language=language)
 
     if _matches_any(text, CAPABILITY_PATTERNS):
         return _output(response_for_language(
-            "I can explain LearNova concepts, guide your next study step, help with progress/XP questions when the data is available, and support you when you feel stuck.",
-            "أقدر أشرح مفاهيم LearNova، أرشدك للخطوة الجاية في المذاكرة، أساعدك في أسئلة التقدم والـ XP لما الداتا تكون متاحة، وأدعمك لما تحس إنك متلخبط.",
+            "I can explain concepts, suggest what to study next, answer progress/XP questions when data is available, and help you when you feel stuck.",
+            "أقدر أشرح مفاهيم، أقترح تذاكر إيه بعد كده، أجاوب عن تقدمك والـ XP لما الداتا تكون متاحة، وأساعدك لما تحس إنك متلخبط.",
             language,
         ), source="local_capability_response", language=language)
 
