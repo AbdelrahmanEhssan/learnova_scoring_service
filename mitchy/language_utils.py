@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
-
 
 ARABIC_CHAR_RE = re.compile(r"[\u0600-\u06FF]")
 
-# Common Egyptian/Arabizi tokens. This is not translation; it is only used to
-# detect and route casual Arabic written in Latin letters.
+# Common Egyptian Arabic and Arabizi tokens. This is not translation; it is used
+# only for routing/language detection so clear Arabic/slang messages do not fall
+# into generic fallback.
 ARABIZI_TOKENS = {
-    "ana", "enta", "enty", "enti", "yasta", "ya", "mesh", "msh", "fahem", "fahma",
-    "ezay", "izay", "ezzay", "leh", "la2", "ah", "aywa", "tmm", "tamam", "kda", "keda",
-    "da", "el", "mn", "meen", "men", "momken", "shrah", "eshrah", "tshra7", "araby", "arabic",
+    "ana", "enta", "enty", "enti", "anty", "yasta", "ya", "mesh", "msh", "fahem", "fahma", "fahm",
+    "ezay", "izay", "ezzay", "ezai", "ezaay", "leh", "la2", "ah", "aywa", "aywaaa", "tmm", "tamam",
+    "kda", "keda", "da", "de", "di", "el", "mn", "meen", "men", "momken", "mab2ash", "maba2ash",
+    "shrah", "eshrah", "tshra7", "shra7", "araby", "3araby", "3raby", "arabic", "bas", "bs", "bardo",
+    "mzaekra", "azaker", "zaker", "track", "trak", "msh", "hat3ml", "a3ml", "eh", "eih", "ayh",
 }
 
 SLANG_REPLACEMENTS = {
@@ -26,7 +29,19 @@ SLANG_REPLACEMENTS = {
     " plz ": " please ",
     " cuz ": " because ",
     " bc ": " because ",
+    " tho ": " though ",
+    " rn?": " right now ",
 }
+
+ARABIC_NORMALIZATION_MAP = str.maketrans({
+    "إ": "ا", "أ": "ا", "آ": "ا", "ٱ": "ا",
+    "ى": "ي", "ئ": "ي", "ؤ": "و", "ة": "ه",
+    "ـ": "",
+})
+
+
+def _strip_diacritics(text: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
 
 
 def has_arabic(text: Any) -> bool:
@@ -36,9 +51,9 @@ def has_arabic(text: Any) -> bool:
 def has_arabizi(text: Any) -> bool:
     raw = str(text or "").lower()
     words = set(re.findall(r"[a-zA-Z0-9]+", raw))
-    # One strong word like yasta/enta + another token is usually enough.
     hits = words & ARABIZI_TOKENS
-    return len(hits) >= 2 or bool({"yasta", "enta", "enty", "mesh", "msh"} & hits)
+    # Strong single tokens like yasta/enta/mesh usually indicate Arabizi.
+    return len(hits) >= 2 or bool({"yasta", "enta", "enty", "mesh", "msh", "meen", "momken"} & hits)
 
 
 def detect_language(text: Any) -> str:
@@ -48,18 +63,26 @@ def detect_language(text: Any) -> str:
     return "en"
 
 
-def normalize_for_intent(text: Any) -> str:
+def normalize_arabic(text: Any) -> str:
     raw = str(text or "").strip().lower()
-    raw = raw.replace("إ", "ا").replace("أ", "ا").replace("آ", "ا")
-    raw = raw.replace("ى", "ي").replace("ة", "ه")
-    raw = re.sub(r"[؟?!.،,؛:]+", " ", raw)
+    raw = _strip_diacritics(raw)
+    raw = raw.translate(ARABIC_NORMALIZATION_MAP)
+    raw = raw.replace("ال xp", " xp ").replace("ال اكس بي", " xp ")
+    raw = raw.replace("اكس بي", " xp ").replace("اكسبي", " xp ")
+    raw = raw.replace("باور بي", " power bi ").replace("بور بي", " power bi ")
+    raw = raw.replace("اس كيو ال", " sql ").replace("اسكيوال", " sql ")
+    return raw
+
+
+def normalize_for_intent(text: Any) -> str:
+    raw = normalize_arabic(text)
+    raw = re.sub(r"[؟?!.،,؛:؛\[\]{}()\"'`]+", " ", raw)
     raw = re.sub(r"\s+", " ", raw)
     padded = f" {raw} "
 
     for src, dst in SLANG_REPLACEMENTS.items():
         padded = padded.replace(src, dst)
 
-    # compact slang variants
     replacements = {
         " who r you ": " who are you ",
         " who are u ": " who are you ",
@@ -68,9 +91,11 @@ def normalize_for_intent(text: Any) -> str:
         " how are u ": " how are you ",
         " can u ": " can you ",
         " do u ": " do you ",
-        " tell me ": " tell me ",
         " yasta enta meen ": " yasta enta men ",
         " yasta enta men ": " yasta enta men ",
+        " enta meen ": " enta men ",
+        " ana mesh ": " ana mesh ",
+        " liner algebra ": " linear algebra ",
     }
     for src, dst in replacements.items():
         padded = padded.replace(src, dst)
@@ -84,23 +109,23 @@ def response_for_language(en: str, ar: str, language: str) -> str:
 
 def mitchy_identity_text(language: str) -> str:
     return response_for_language(
-        "I’m Mitchy, your virtual Learning Assistant in LearNova. I can explain concepts, guide what to study next, and help you understand your progress without making things complicated.",
-        "أنا Mitchy، مساعدك التعليمي الافتراضي في LearNova. أقدر أشرحلك المفاهيم، أقولك تذاكر إيه بعد كده، وأساعدك تفهم تقدمك بطريقة بسيطة.",
+        "I’m Mitchy, your virtual Learning Assistant in LearNova. I help you understand concepts, decide what to study next, and track your progress clearly.",
+        "أنا Mitchy، مساعدك التعليمي الافتراضي في LearNova. أقدر أشرحلك المفاهيم، أقولك تذاكر إيه بعد كده، وأساعدك تتابع تقدمك بوضوح.",
         language,
     )
 
 
 def language_capability_text(language: str) -> str:
     return response_for_language(
-        "Yes, I understand Arabic and English, including casual/slang English like “who r u” and simple Arabizi. I’ll usually reply in the same language you use.",
-        "أيوه، بفهم عربي وإنجليزي، وكمان الاختصارات زي “who r u” والعربيزي البسيط. غالبًا هرد عليك بنفس اللغة اللي بتكلمني بيها.",
+        "Yes, I understand Arabic and English, including casual English and simple Arabizi. I’ll reply in the language you use, unless you ask me to switch.",
+        "أيوه، بفهم عربي وإنجليزي، وكمان الإنجليزي العامي والعربيزي البسيط. هرد عليك بنفس اللغة اللي بتكلمني بيها إلا لو طلبت أغيّر اللغة.",
         language,
     )
 
 
 def gentle_fallback_text(language: str) -> str:
     return response_for_language(
-        "I’m with you. Send the concept, lesson, or goal you want help with, and I’ll guide you step by step.",
-        "أنا معاك. ابعتلي المفهوم، الدرس، أو الهدف اللي محتاج مساعدة فيه، وأنا أوضحلك خطوة بخطوة.",
+        "I’m here with you. Tell me what you want to understand or what goal you’re working on, and I’ll help clearly.",
+        "أنا معاك. قولّي عايز تفهم إيه أو هدفك إيه، وأنا هساعدك بوضوح.",
         language,
     )
