@@ -17,6 +17,8 @@ NON_RETRIEVAL_PATTERNS = [
     r"\bwhat\s+should\s+i\b", r"\bwhat\s+to\s+study\b", r"\bstart\s+with\b", r"\broadmap\b", r"\bplan\b",
     r"\bmy\s+(rank|xp|badges?|perks?|track|progress)\b", r"\bnext\s+(level|badge|milestone|topic|module)\b",
     r"\bcareer\b", r"\bjobs?\b", r"\bwhere\s+can\s+i\s+work\b", r"\bafter\s+.*track\b", r"\bcv\b", r"\bproject\b",
+    r"\bsame\s+(thing|concept|answer)\b", r"\bin\s+(arabic|english)\b", r"\bcompare\b", r"\bboth\b", r"\bit\b", r"\bthat\b", r"\bagain\b",
+    r"نفس", r"الاتنين", r"قارن", r"الفرق", r"بالعربي", r"بالانجليزي", r"بالإنجليزي",
 ]
 
 BAD_LOW_CONTEXT_PHRASES = [

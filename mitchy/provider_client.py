@@ -19,7 +19,7 @@ def _timeout_seconds() -> int:
 
 
 def _provider_order() -> list[str]:
-    raw = os.getenv("MITCHY_PROVIDER_ORDER", "groq,gemini,openrouter,xai")
+    raw = os.getenv("MITCHY_PROVIDER_ORDER", "github,groq,gemini,openrouter,xai")
     providers: list[str] = []
     for item in raw.split(","):
         provider = item.strip().lower()
@@ -102,6 +102,23 @@ def _call_generic_openai(prompt: str) -> Tuple[Optional[str], Optional[str]]:
     return _call_openai_compatible(provider="primary", url=url, api_key=api_key, model=model, prompt=prompt)
 
 
+
+def _call_github_models(prompt: str) -> Tuple[Optional[str], Optional[str]]:
+    """GitHub Models provider. Useful with GitHub Student Developer Pack access.
+
+    Default endpoint follows GitHub Models' OpenAI-compatible chat completions shape.
+    If GitHub changes the endpoint, override GITHUB_MODELS_BASE_URL in Railway.
+    """
+    api_key = os.getenv("GITHUB_MODELS_API_KEY") or os.getenv("GITHUB_TOKEN")
+    if not api_key:
+        return None, "github: GITHUB_MODELS_API_KEY/GITHUB_TOKEN is not configured"
+    model = os.getenv("GITHUB_MODEL", "openai/gpt-5-mini")
+    base_url = os.getenv("GITHUB_MODELS_BASE_URL", "https://models.github.ai/inference")
+    url = base_url.rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url = f"{url}/chat/completions"
+    return _call_openai_compatible(provider="github", url=url, api_key=api_key, model=model, prompt=prompt)
+
 def _call_groq(prompt: str) -> Tuple[Optional[str], Optional[str]]:
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -147,6 +164,9 @@ def call_backup_provider(prompt: str) -> Tuple[Optional[str], Optional[str], Opt
         if provider in {"primary", "generic"}:
             text, error = _call_generic_openai(prompt)
             provider_name = "primary"
+        elif provider == "github":
+            text, error = _call_github_models(prompt)
+            provider_name = "github"
         elif provider == "groq":
             text, error = _call_groq(prompt)
             provider_name = "groq"

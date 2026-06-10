@@ -265,7 +265,7 @@ def _answer_gamification_question(*, text: str, user_id: str, language: str) -> 
 def _answer_career_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:
     if not _matches_any(text, [
         r"\bcareer\b", r"\bjobs?\b", r"\bwork\b", r"\bhired\b", r"\bemployment\b", r"\bentry\s*level\b", r"\bportfolio\b", r"\bcv\b", r"\bproject\b",
-        r"\bafter\s+.*track\b", r"\bfinish\s+.*track\b", r"\bdata\s+analyst\s+job\b", r"\bwhat\s+does\s+a\s+data\s+analyst\s+do\b",
+        r"\bafter\s+.*track\b", r"\bfinish\s+.*track\b", r"\bafter\s+(da|data\s+analytics|data\s+engineering|data\s+science)\b", r"\bwhat\s+.*after\s+.*(finish|finishing|complete|completing)\b", r"\bwhere\s+can\s+i\s+work\b", r"\bwhat\s+can\s+i\s+work\s+as\b", r"\bdata\s+analyst\s+job\b", r"\bwhat\s+does\s+a\s+data\s+analyst\s+do\b",
         r"اشتغل", r"وظيفه", r"وظيفة", r"شغل", r"بعد\s+.*track", r"سي\s*في", r"بورتفوليو", r"مشروع",
     ]):
         return None
@@ -351,7 +351,316 @@ def _answer_progress_status(*, text: str, user_id: str, topic_id: Optional[str],
     return _output(response_for_language(f"Here is what I can see: Track: {TRACK_LABELS.get(str(position.get('assigned_track')), position.get('assigned_track') or 'not found')} | XP: {position.get('xp_total') if position.get('xp_total') is not None else 'not visible'}. ", f"ده اللي أقدر أشوفه: المسار: {TRACK_LABELS.get(str(position.get('assigned_track')), position.get('assigned_track') or 'غير ظاهر')} | XP: {position.get('xp_total') if position.get('xp_total') is not None else 'غير ظاهر'}.", language), {**metadata, "answered_field": "progress_summary"}, language=language)
 
 
+
+def _answer_study_plan_question(*, text: str, user_id: str, topic_id: Optional[str], module_id: Optional[str], language: str) -> Optional[Dict[str, Any]]:
+    """Purpose-built plan builder. This handles planning intent before generic track/progress logic."""
+    if not _matches_any(text, [
+        r"\bmake\s+me\s+.*plan\b", r"\bshort\s+plan\b", r"\bplan\s+for\s+today\b", r"\bstudy\s+plan\b", r"\bwhat\s+should\s+i\s+start\s+with\b",
+        r"\bwhere\s+should\s+i\s+start\b", r"\bhow\s+should\s+i\s+start\b", r"\bwhat\s+should\s+i\s+(learn|study)\b", r"\bstudy\s+now\b", r"\bstart\s+studying\b",
+        r"\b10\s+minutes\b", r"\b20\s+minutes\b", r"\bone\s+small\s+thing\b", r"\bnext\s+topic\b",
+        r"خطة", r"ابدأ", r"ابدا", r"اذاكر", r"أذاكر", r"اتعلم", r"أتعلم", r"نبدأ", r"نبدا", r"تايه", r"مش\s+عارف\s+ابدأ", r"مش\s+عارف\s+ابدا", r"النهارده",
+    ]):
+        return None
+
+    _, track_code, track_label, path = _track_and_path(user_id, text)
+    topics = path.get("topics") or []
+    metadata = {
+        "answered_field": "study_plan",
+        "resolved_track": track_code,
+        "course_found": bool((path.get("course") or {}).get("id")),
+        "topics_count": len(topics),
+        "modules_count": len(path.get("modules") or []),
+    }
+
+    if not topics:
+        return _output(
+            response_for_language(
+                "I can help you plan, but I cannot see the topic list for your track yet. Start with the first visible lesson in your track map, then ask me inside that lesson for a focused plan.",
+                "أقدر أعملك خطة، لكن مش شايف قائمة موضوعات التراك حاليًا. ابدأ بأول درس ظاهر في خريطة التراك، وبعدها اسألني جوه الدرس أعملك خطة مركزة.",
+                language,
+            ),
+            metadata,
+            language=language,
+            action="recommend_resource",
+        )
+
+    first = topics[0].get("title") or "the first topic"
+    second = topics[1].get("title") if len(topics) > 1 else None
+    third = topics[2].get("title") if len(topics) > 2 else None
+
+    if _matches_any(text, [r"\b10\s+minutes\b", r"\bone\s+small\s+thing\b", r"وقت\s+قليل", r"١٠", r"10"]):
+        out = response_for_language(
+            f"Use the next 10 minutes for one thing only: open {first}, read the objective, and write 3 bullet notes in your own words. Do not jump to the next topic until you can explain the main idea in one sentence.",
+            f"استغل الـ 10 دقايق في حاجة واحدة بس: افتح {first}، اقرأ الهدف، واكتب 3 ملاحظات بأسلوبك. متدخلش على موضوع جديد غير لما تقدر تشرح الفكرة الأساسية في جملة واحدة.",
+            language,
+        )
+    elif _matches_any(text, [r"\b20\s+minutes\b", r"twenty", r"٢٠", r"20"]):
+        out = response_for_language(
+            f"For 20 minutes: 1) spend 8 minutes on {first}, 2) write a tiny example, 3) if it feels clear, preview {second or 'the next topic'} for 5 minutes. Keep it light; the goal is momentum, not finishing everything.",
+            f"في 20 دقيقة: 1) خصص 8 دقايق لـ {first}، 2) اكتب مثال صغير، 3) لو الدنيا واضحة، بص بسرعة على {second or 'الموضوع اللي بعده'} لمدة 5 دقايق. الهدف تحرك بسيط مش إنك تخلص كل حاجة.",
+            language,
+        )
+    else:
+        out = response_for_language(
+            f"Here’s a simple plan for your {track_label} track: 1) Start with {first}; 2) write one example in your own words; 3) move to {second or 'the next topic'} only after the first idea feels clear. After that, preview {third or 'the next small lesson'}.",
+            f"دي خطة بسيطة لمسار {track_label}: 1) ابدأ بـ {first}؛ 2) اكتب مثال واحد بأسلوبك؛ 3) انتقل لـ {second or 'الموضوع اللي بعده'} بس لما أول فكرة تبقى واضحة. بعد كده بص على {third or 'الدرس الصغير اللي بعده'}.",
+            language,
+        )
+
+    return _output(out, metadata, language=language, action="recommend_resource")
+
+
+def _answer_topic_start_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:
+    """Answers 'how do I start X?' with a practical learning path, not a definition of X."""
+    start_intent = _matches_any(text, [
+        r"\bhow\s+(do|should|can)\s+i\s+start\b", r"\bwhere\s+(do|should|can)\s+i\s+start\b", r"\bstart\s+(with|learning|studying)\b", r"\bfocus\s+on\b",
+        r"\bi\s+want\s+to\s+focus\s+on\b", r"\bnot\s+understand\b", r"\bstuck\b", r"\bمش\s+فاهم\b", r"\bنبدأ\b", r"\bنبدا\b", r"\bأبدأ\b", r"\bابدا\b",
+    ])
+    if not start_intent:
+        return None
+
+    concept = None
+    if _matches_any(text, [r"\bsql\b", r"اس\s*كيو\s*ال", r"joins?"]):
+        concept = "SQL"
+        en_steps = "1) Understand what a table, row, and column are; 2) practice SELECT and WHERE; 3) then learn JOINs with two small tables. Start by writing one SELECT query today."
+        ar_steps = "1) افهم يعني إيه جدول وصف وعمود؛ 2) اتدرب على SELECT و WHERE؛ 3) بعدها ادخل على JOINs بجدولين صغيرين. ابدأ النهارده باستعلام SELECT واحد."
+    elif _matches_any(text, [r"python", r"بايثون"]):
+        concept = "Python"
+        en_steps = "1) Start with variables and print; 2) practice if/else and loops; 3) write a tiny script that cleans or prints a small list. Keep the first script very small."
+        ar_steps = "1) ابدأ بالمتغيرات و print؛ 2) اتدرب على if/else والـ loops؛ 3) اكتب سكريبت صغير يتعامل مع ليست بسيطة. خلي أول سكريبت صغير جدًا."
+    elif _matches_any(text, [r"power\s*bi", r"باور\s*بي", r"بور\s*بي"]):
+        concept = "Power BI"
+        en_steps = "1) Load a small dataset; 2) clean column names; 3) create one chart; 4) add one slicer. Do not start with advanced DAX yet."
+        ar_steps = "1) حمّل داتا صغيرة؛ 2) نظف أسماء الأعمدة؛ 3) اعمل chart واحد؛ 4) ضيف slicer واحد. متبدأش بـ DAX المتقدم دلوقتي."
+    elif _matches_any(text, [r"data\s+analysis", r"data\s+analytics", r"تحليل\s+بيانات", r"تحليل\s+البيانات"]):
+        concept = "Data Analysis"
+        en_steps = "1) Start with a simple question; 2) inspect the dataset; 3) clean obvious errors; 4) summarize one pattern with a chart or table."
+        ar_steps = "1) ابدأ بسؤال بسيط؛ 2) بص على الداتا؛ 3) نظف الأخطاء الواضحة؛ 4) لخص نمط واحد في chart أو جدول."
+
+    if not concept:
+        return None
+
+    return _output(response_for_language(f"To start {concept}, do this: {en_steps}", f"عشان تبدأ {concept}: {ar_steps}", language), {"answered_field": "topic_start_plan", "concept": concept}, language=language, action="recommend_resource")
+
 def answer_progress_status_question(*, message: str, user_id: str, topic_id: Optional[str], module_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    original = str(message or "").strip()
+    text = normalize_for_intent(original)
+    language = detect_language(original)
+    if not text:
+        return None
+    # Specific intent handlers first. This prevents generic progress/track logic from
+    # stealing questions like “make a plan” or “how do I start SQL?”.
+    for handler in (
+        _answer_xp_system_question,
+        _answer_gamification_question,
+        _answer_career_question,
+        _answer_study_plan_question,
+        _answer_topic_start_question,
+        _answer_learning_path_question,
+    ):
+        if handler in {_answer_learning_path_question, _answer_study_plan_question}:
+            out = handler(text=text, user_id=user_id, topic_id=topic_id, module_id=module_id, language=language)
+        else:
+            out = handler(text=text, user_id=user_id, language=language)
+        if out:
+            return out
+    return _answer_progress_status(text=text, user_id=user_id, topic_id=topic_id, module_id=module_id, language=language)
+
+# ---------------------------------------------------------------------------
+# 2026-06 memory/intent patch: overrides above handlers with stricter intent.
+# ---------------------------------------------------------------------------
+
+
+def _answer_gamification_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:  # type: ignore[override]
+    if not _matches_any(text, [r"\brank\b", r"\bxp\b", r"\bpoints?\b", r"\bleaderboard\b", r"\bbadges?\b", r"\bperks?\b", r"\bhints?\b", r"\bnext\s+(level|badge|milestone)\b", r"\bhow\s+close\b", r"رانك", r"ترتيب", r"نقاط", r"بادج", r"شاره", r"شارة", r"مميزات", r"امتياز", r"تلميح"]):
+        return None
+    context = build_user_context(user_id=user_id)
+    gamification = context.get("gamification") or {}
+    xp_total = gamification.get("xp_total")
+    rank = gamification.get("rank")
+    badges = gamification.get("badges") or []
+    perks = gamification.get("perks") or []
+    xp_to_next = gamification.get("xp_to_next_level") or gamification.get("xp_to_next_badge")
+
+    wants_badges = _matches_any(text, [r"badges?", r"next\s+badge", r"closest\s+.*badge", r"بادج", r"شاره", r"شارة"])
+    wants_perks = _matches_any(text, [r"perks?", r"hints?", r"hint", r"مميزات", r"امتياز", r"تلميح"])
+    wants_next = _matches_any(text, [r"next\s+(level|milestone)", r"close\s+.*next", r"xp\s+milestone", r"باقي", r"اللي\s+بعد", r"المستوى\s+اللي\s+بعد"])
+    wants_rank = _matches_any(text, [r"rank", r"leaderboard", r"ترتيب", r"رانك"])
+    wants_xp = _matches_any(text, [r"xp", r"points?", r"نقاط"])
+
+    lines: List[str] = []
+    if wants_rank:
+        rank_value = None
+        if isinstance(rank, dict):
+            for key in ("rank", "position", "leaderboard_rank", "current_rank"):
+                if rank.get(key) is not None:
+                    rank_value = rank.get(key)
+                    break
+        elif rank is not None:
+            rank_value = rank
+        if rank_value is not None:
+            lines.append(response_for_language(f"Your current rank is {rank_value}.", f"الرانك الحالي بتاعك هو {rank_value}.", language))
+        else:
+            lines.append(response_for_language("I can see your progress, but I do not see a saved leaderboard rank yet.", "شايف تقدمك، لكن مش شايف رانك محفوظ في الليدربورد حاليًا.", language))
+    if wants_next:
+        if xp_total is not None and xp_to_next is not None:
+            lines.append(response_for_language(f"You currently have {xp_total} XP, and you need {xp_to_next} more XP for the next visible milestone.", f"عندك حاليًا {xp_total} XP، ومحتاج {xp_to_next} XP كمان لأقرب milestone ظاهر عندي.", language))
+        elif xp_total is not None:
+            lines.append(response_for_language(f"You currently have {xp_total} XP, but I cannot see the next-milestone threshold yet, so I should not invent a number.", f"عندك حاليًا {xp_total} XP، لكن مش شايف شرط الـ milestone اللي بعده، فمش هخمن رقم.", language))
+        else:
+            lines.append(response_for_language("I cannot see your XP or next milestone yet.", "مش قادر أشوف الـ XP أو الـ milestone اللي بعده حاليًا.", language))
+    if wants_badges:
+        if badges:
+            lines.append(response_for_language(f"I can see {len(badges)} earned badge(s).", f"شايف عندك {len(badges)} شارة مكتسبة.", language))
+        else:
+            lines.append(response_for_language("I do not see earned badges or badge-progress rules yet. Keep completing lessons and challenges, and I can track them once the app saves badge progress.", "مش شايف شارات مكتسبة أو قواعد تقدم الشارات حاليًا. كمّل الدروس والتحديات، ولما التطبيق يحفظ تقدم الشارات هقدر أتابعها معاك.", language))
+    if wants_perks:
+        if perks:
+            lines.append(response_for_language(f"I can see {len(perks)} available perk(s).", f"شايف عندك {len(perks)} ميزة متاحة.", language))
+        else:
+            lines.append(response_for_language("I do not see saved perks or hints available for your account right now.", "مش شايف مميزات أو تلميحات محفوظة لحسابك حاليًا.", language))
+    if not lines and wants_xp:
+        if xp_total is not None:
+            lines.append(response_for_language(f"Your visible XP is {xp_total}.", f"الـ XP الظاهر عندي لحسابك هو {xp_total}.", language))
+        else:
+            lines.append(response_for_language("I cannot see your XP total yet.", "مش قادر أشوف إجمالي الـ XP حاليًا.", language))
+    if not lines:
+        return None
+    return _output(" ".join(lines), {"answered_field": "gamification", "gamification_found": True}, language=language)
+
+
+def _answer_career_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:  # type: ignore[override]
+    if not _matches_any(text, [
+        r"\bcareer\b", r"\bjobs?\b", r"\bwork\b", r"\bhired\b", r"\bemployment\b", r"\bentry\s*level\b", r"\bportfolio\b", r"\bcv\b", r"\bproject\b",
+        r"\bafter\s+.*track\b", r"\bfinish\s+.*track\b", r"\bfinishing\s+.*track\b", r"\bcomplete\s+.*track\b", r"\bafter\s+(da|data\s+analytics|data\s+engineering|data\s+science)\b",
+        r"\bwhat\s+.*after\s+.*(finish|finishing|complete|completing)\b", r"\bwhere\s+can\s+i\s+work\b", r"\bwhat\s+can\s+i\s+work\s+as\b", r"\bwhat\s+can\s+i\s+do\s+with\s+(it|data|analytics|data\s+analytics)\b",
+        r"\bis\s+.*useful\b", r"\bdata\s+analyst\s+job\b", r"\bwhat\s+does\s+a\s+data\s+analyst\s+do\b",
+        r"اشتغل", r"وظيفه", r"وظيفة", r"شغل", r"بعد\s+.*track", r"بعد\s+.*التراك", r"بعد\s+.*المسار", r"سي\s*في", r"بورتفوليو", r"مشروع", r"اعمل\s+ايه\s+بعد", r"اقدر\s+اعمل\s+ايه",
+    ]):
+        return None
+    _, track_code, track_label, path = _track_and_path(user_id, text)
+    career = CAREER_BY_TRACK.get(track_code or "DA", CAREER_BY_TRACK["DA"])
+    jobs = ", ".join(career["jobs"][:5])
+    topics = path.get("topics") or []
+    if _matches_any(text, [r"\bcv\b", r"سي\s*في"]):
+        topic_names = ", ".join([str(t.get("title")) for t in topics[:5] if t.get("title")]) or career["skills"]
+        out = response_for_language(
+            f"For your CV after the first level, write skills you actually practiced: {topic_names}. Add one beginner project line, for example: built a small {career['label']} project to clean data, analyze results, and present insights.",
+            f"في الـ CV بعد أول Level، اكتب المهارات اللي اتدربت عليها فعلًا: {topic_names}. وضيف سطر مشروع بسيط مثل: عملت مشروع {career['label']} صغير لتنضيف الداتا وتحليل النتائج وعرض insight.",
+            language,
+        )
+    elif _matches_any(text, [r"\bproject\b", r"portfolio", r"مشروع", r"بورتفوليو"]):
+        out = response_for_language(
+            f"Build a small {career['label']} portfolio project: choose a simple dataset, clean it, answer 3 business questions, create 2–3 visuals, and write a short conclusion. A good target is {career['project']}.",
+            f"اعمل مشروع بورتفوليو صغير في {career['label']}: اختار dataset بسيطة، نظفها، جاوب 3 أسئلة business، اعمل 2–3 visuals، واكتب conclusion قصير. مثال مناسب: {career['project']}.",
+            language,
+        )
+    else:
+        out = response_for_language(
+            f"After {career['label']}, you can aim for roles like: {jobs}. In those roles, you usually {career['work']}. So after the track, build 2–3 portfolio projects and practice interviews around {career['skills']}.",
+            f"بعد {career['label']} تقدر تستهدف وظائف زي: {jobs}. في الشغل ده غالبًا هتعمل إنك {career['work']}. بعد التراك، اعمل 2–3 مشاريع بورتفوليو واتدرب على مقابلات في {career['skills']}.",
+            language,
+        )
+    return _output(out, {"answered_field": "career_path", "resolved_track": track_code}, language=language)
+
+
+def _answer_study_plan_question(*, text: str, user_id: str, topic_id: Optional[str], module_id: Optional[str], language: str) -> Optional[Dict[str, Any]]:  # type: ignore[override]
+    if not _matches_any(text, [
+        r"\bmake\s+me\s+.*plan\b", r"\bshort\s+plan\b", r"\bplan\s+for\s+today\b", r"\bstudy\s+plan\b", r"\bwhat\s+should\s+i\s+start\s+with\b",
+        r"\bwhere\s+should\s+i\s+start\b", r"\bhow\s+should\s+i\s+start\b", r"\bwhat\s+should\s+i\s+(learn|study)\b", r"\bstudy\s+now\b", r"\bstart\s+studying\b",
+        r"\b10\s+minutes\b", r"\b20\s+minutes\b", r"\bone\s+small\s+thing\b", r"\bnext\s+topic\b", r"\bnot\s+sure\s+what\s+i\s+should\s+do\b",
+        r"خطة", r"ابدأ", r"ابدا", r"اذاكر", r"أذاكر", r"اتعلم", r"أتعلم", r"نبدأ", r"نبدا", r"تايه", r"مش\s+عارف\s+ابدأ", r"مش\s+عارف\s+ابدا", r"النهارده",
+    ]):
+        return None
+    # If a concrete concept is present, topic-start planning is more relevant.
+    if _matches_any(text, [r"\bsql\b", r"python", r"power\s*bi", r"excel", r"joins?", r"بايثون", r"بور\s*بي", r"باور\s*بي", r"اس\s*كيو\s*ال"]):
+        return None
+
+    _, track_code, track_label, path = _track_and_path(user_id, text)
+    topics = path.get("topics") or []
+    metadata = {"answered_field": "study_plan", "resolved_track": track_code, "course_found": bool((path.get("course") or {}).get("id")), "topics_count": len(topics), "modules_count": len(path.get("modules") or [])}
+    if not topics:
+        return _output(response_for_language("I can build a plan, but I cannot see your track topics yet. Start with the first visible lesson, then ask me inside that lesson for a focused plan.", "أقدر أعمل خطة، لكن مش شايف موضوعات التراك حاليًا. ابدأ بأول درس ظاهر، وبعدها اسألني جوه الدرس أعملك خطة مركزة.", language), metadata, language=language, action="recommend_resource")
+
+    first = topics[0].get("title") or "the first topic"
+    second = topics[1].get("title") if len(topics) > 1 else "the next topic"
+    third = topics[2].get("title") if len(topics) > 2 else "one small practice task"
+    if _matches_any(text, [r"\b10\s+minutes\b", r"\bone\s+small\s+thing\b", r"وقت\s+قليل", r"١٠", r"10"]):
+        out = response_for_language(
+            f"Do one small thing: open {first}, read only the objective, then write 3 bullet points in your own words. Stop there; the goal is momentum, not finishing a whole module.",
+            f"اعمل حاجة واحدة صغيرة: افتح {first}، اقرأ الهدف بس، واكتب 3 نقاط بأسلوبك. وقف هنا؛ الهدف إنك تتحرك مش تخلص موديول كامل.",
+            language,
+        )
+    else:
+        out = response_for_language(
+            f"Here’s a practical plan: 1) Start with {first}; 2) write one tiny example in your own words; 3) do one quick exercise; 4) only then preview {second}. If {first} feels hard, ask me to break it down before moving on.",
+            f"دي خطة عملية: 1) ابدأ بـ {first}؛ 2) اكتب مثال صغير بأسلوبك؛ 3) حل تمرين سريع؛ 4) بعدها بس بص على {second}. لو {first} صعب، اسألني أبسطه قبل ما تكمل.",
+            language,
+        )
+    return _output(out, metadata, language=language, action="recommend_resource")
+
+
+def _answer_topic_start_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:  # type: ignore[override]
+    start_intent = _matches_any(text, [
+        r"\bhow\s+(do|should|can)\s+i\s+start\b", r"\bwhere\s+(do|should|can)\s+i\s+start\b", r"\bstart\s+(with|learning|studying)\b", r"\bfocus\s+on\b",
+        r"\bi\s+want\s+to\s+focus\s+on\b", r"\bnot\s+understand\b", r"\bstuck\b", r"\bمش\s+فاهم\b", r"\bنبدأ\b", r"\bنبدا\b", r"\bأبدأ\b", r"\bابدا\b",
+    ])
+    if not start_intent:
+        return None
+
+    concept = None
+    in_track_note_en = ""
+    in_track_note_ar = ""
+    if _matches_any(text, [r"\bsql\b", r"اس\s*كيو\s*ال", r"joins?"]):
+        concept = "SQL"
+        en_steps = "1) Learn what a table, row, and column are; 2) write SELECT * FROM table; 3) add WHERE filters; 4) then practice JOIN with two tiny tables."
+        ar_steps = "1) افهم يعني إيه table و row و column؛ 2) اكتب SELECT بسيط؛ 3) ضيف WHERE؛ 4) بعدها اتدرب على JOIN بجدولين صغيرين."
+    elif _matches_any(text, [r"python", r"بايثون"]):
+        concept = "Python"
+        en_steps = "1) Start with variables and print; 2) practice if/else; 3) write a tiny loop; 4) make a small script that cleans or prints a list."
+        ar_steps = "1) ابدأ بالمتغيرات و print؛ 2) اتدرب على if/else؛ 3) اكتب loop صغير؛ 4) اعمل سكريبت بسيط يتعامل مع list."
+    elif _matches_any(text, [r"power\s*bi", r"bi\s*power", r"باور\s*بي", r"بور\s*بي"]):
+        concept = "Power BI"
+        en_steps = "1) Load a small dataset; 2) clean column names; 3) make one chart; 4) add one slicer; 5) avoid advanced DAX at the start."
+        ar_steps = "1) حمّل dataset صغيرة؛ 2) نظف أسماء الأعمدة؛ 3) اعمل chart واحد؛ 4) ضيف slicer واحد؛ 5) متبدأش بـ DAX المتقدم."
+    elif _matches_any(text, [r"java", r"جافا"]):
+        concept = "Java"
+        en_steps = "1) Learn variables and types; 2) write a small main method; 3) practice if/else and loops; 4) build one console program. This may be outside your current LearNova Data Analytics path, but I can still guide you."
+        ar_steps = "1) ابدأ بالمتغيرات والأنواع؛ 2) اكتب main method صغيرة؛ 3) اتدرب على if/else و loops؛ 4) اعمل console program بسيط. ده ممكن يكون خارج مسارك الحالي في LearNova، لكن أقدر أساعدك فيه."
+    elif _matches_any(text, [r"data\s+analysis", r"data\s+analytics", r"تحليل\s+بيانات", r"تحليل\s+البيانات"]):
+        concept = "Data Analysis"
+        en_steps = "1) Start with one question; 2) inspect the dataset; 3) clean obvious errors; 4) summarize one pattern with a chart or table."
+        ar_steps = "1) ابدأ بسؤال واحد؛ 2) افحص الداتا؛ 3) نظف الأخطاء الواضحة؛ 4) لخص pattern واحد في chart أو جدول."
+    if not concept:
+        return None
+    return _output(response_for_language(f"To start {concept}, follow this path: {en_steps}{in_track_note_en}", f"عشان تبدأ {concept}: {ar_steps}{in_track_note_ar}", language), {"answered_field": "topic_start_plan", "concept": concept}, language=language, action="recommend_resource")
+
+
+def _answer_learning_path_question(*, text: str, user_id: str, topic_id: Optional[str], module_id: Optional[str], language: str) -> Optional[Dict[str, Any]]:  # type: ignore[override]
+    # Do not treat career-after-track questions as a curriculum roadmap.
+    if _matches_any(text, [r"after\s+.*track", r"finish\s+.*track", r"finishing\s+.*track", r"jobs?", r"career", r"work", r"cv", r"portfolio", r"project", r"بعد\s+.*التراك", r"اشتغل", r"وظيفة", r"شغل"]):
+        return None
+    if not _matches_any(text, [
+        r"\bwhat\s+should\s+i\s+(learn|study|start)\b", r"\bwhat\s+should\s+i\s+start\s+with\b", r"\bwhat\s+to\s+(learn|study)\b",
+        r"\broadmap\b", r"\bnext\s+(topic|module|step|few\s+steps)\b", r"\btrack\s+roadmap\b", r"\bdata\s+analytics\s+track\b", r"\bdata\s+engineering\s+track\b", r"\bdata\s+science\s+track\b",
+        r"اتعلم", r"أتعلم", r"تراك", r"مسار", r"بعد\s+كده", r"الخطوه", r"الخطوة",
+    ]):
+        return None
+    position, track_code, track_label, path = _track_and_path(user_id, text)
+    topics = path.get("topics") or []
+    metadata = {"answered_field": "learning_path", "assigned_track": position.get("assigned_track"), "resolved_track": track_code, "course_found": bool((path.get("course") or {}).get("id")), "topics_count": len(topics), "modules_count": len(path.get("modules") or [])}
+    if not topics:
+        return _output(response_for_language("I found your track, but I could not load its topic list yet. Open your track map and ask me again.", "لقيت التراك بتاعك، لكن مش قادر أحمل قائمة الموضوعات حاليًا. افتح خريطة التراك واسألني تاني.", language), metadata, language=language)
+    topic_list = _format_topic_list(topics, limit=5, language=language)
+    out = response_for_language(
+        f"For your {track_label} path, the next visible topics are:\n{topic_list}\nStart with the first one, then ask me for a mini-plan inside that topic.",
+        f"في مسار {track_label}، الموضوعات الجاية الظاهرة هي:\n{topic_list}\nابدأ بأول واحد، وبعدها اسألني أعملك mini-plan جوه الموضوع.",
+        language,
+    )
+    return _output(out, metadata, language=language, action="recommend_resource")
+
+
+def answer_progress_status_question(*, message: str, user_id: str, topic_id: Optional[str], module_id: Optional[str]) -> Optional[Dict[str, Any]]:  # type: ignore[override]
     original = str(message or "").strip()
     text = normalize_for_intent(original)
     language = detect_language(original)
@@ -361,9 +670,11 @@ def answer_progress_status_question(*, message: str, user_id: str, topic_id: Opt
         _answer_xp_system_question,
         _answer_gamification_question,
         _answer_career_question,
+        _answer_topic_start_question,
+        _answer_study_plan_question,
         _answer_learning_path_question,
     ):
-        if handler is _answer_learning_path_question:
+        if handler in {_answer_learning_path_question, _answer_study_plan_question}:
             out = handler(text=text, user_id=user_id, topic_id=topic_id, module_id=module_id, language=language)
         else:
             out = handler(text=text, user_id=user_id, language=language)
