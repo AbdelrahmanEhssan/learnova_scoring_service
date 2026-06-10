@@ -264,9 +264,9 @@ def _answer_gamification_question(*, text: str, user_id: str, language: str) -> 
 
 def _answer_career_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:
     if not _matches_any(text, [
-        r"\bcareer\b", r"\bjobs?\b", r"\bwork\b", r"\bhired\b", r"\bemployment\b", r"\bentry\s*level\b", r"\bportfolio\b", r"\bcv\b", r"\bproject\b",
+        r"\bcareer\b", r"\bjobs?\b", r"\bwork\b", r"\bhired\b", r"\bemployment\b", r"\bentry\s*level\b", r"\bportfolio\b", r"\bcv\b", r"\bproject\b", r"\buseful\b", r"\bwhat\s+can\s+i\s+do\s+with\s+it\b",
         r"\bafter\s+.*track\b", r"\bfinish\s+.*track\b", r"\bafter\s+(da|data\s+analytics|data\s+engineering|data\s+science)\b", r"\bwhat\s+.*after\s+.*(finish|finishing|complete|completing)\b", r"\bwhere\s+can\s+i\s+work\b", r"\bwhat\s+can\s+i\s+work\s+as\b", r"\bdata\s+analyst\s+job\b", r"\bwhat\s+does\s+a\s+data\s+analyst\s+do\b",
-        r"اشتغل", r"وظيفه", r"وظيفة", r"شغل", r"بعد\s+.*track", r"سي\s*في", r"بورتفوليو", r"مشروع",
+        r"اشتغل", r"وظيفه", r"وظيفة", r"شغل", r"بعد\s+.*track", r"بعد\s+.*تراك", r"بعد\s+.*مسار", r"مسار.*بعد\s+كده", r"مفيد", r"اعمل\s+بيه", r"استخدمه", r"سي\s*في", r"بورتفوليو", r"مشروع",
     ]):
         return None
     _, track_code, track_label, path = _track_and_path(user_id, text)
@@ -531,11 +531,11 @@ def _answer_gamification_question(*, text: str, user_id: str, language: str) -> 
 
 def _answer_career_question(*, text: str, user_id: str, language: str) -> Optional[Dict[str, Any]]:  # type: ignore[override]
     if not _matches_any(text, [
-        r"\bcareer\b", r"\bjobs?\b", r"\bwork\b", r"\bhired\b", r"\bemployment\b", r"\bentry\s*level\b", r"\bportfolio\b", r"\bcv\b", r"\bproject\b",
+        r"\bcareer\b", r"\bjobs?\b", r"\bwork\b", r"\bhired\b", r"\bemployment\b", r"\bentry\s*level\b", r"\bportfolio\b", r"\bcv\b", r"\bproject\b", r"\buseful\b", r"\bwhat\s+can\s+i\s+do\s+with\s+it\b",
         r"\bafter\s+.*track\b", r"\bfinish\s+.*track\b", r"\bfinishing\s+.*track\b", r"\bcomplete\s+.*track\b", r"\bafter\s+(da|data\s+analytics|data\s+engineering|data\s+science)\b",
         r"\bwhat\s+.*after\s+.*(finish|finishing|complete|completing)\b", r"\bwhere\s+can\s+i\s+work\b", r"\bwhat\s+can\s+i\s+work\s+as\b", r"\bwhat\s+can\s+i\s+do\s+with\s+(it|data|analytics|data\s+analytics)\b",
         r"\bis\s+.*useful\b", r"\bdata\s+analyst\s+job\b", r"\bwhat\s+does\s+a\s+data\s+analyst\s+do\b",
-        r"اشتغل", r"وظيفه", r"وظيفة", r"شغل", r"بعد\s+.*track", r"بعد\s+.*التراك", r"بعد\s+.*المسار", r"سي\s*في", r"بورتفوليو", r"مشروع", r"اعمل\s+ايه\s+بعد", r"اقدر\s+اعمل\s+ايه",
+        r"اشتغل", r"وظيفه", r"وظيفة", r"شغل", r"بعد\s+.*track", r"بعد\s+.*التراك", r"بعد\s+.*المسار", r"بعد\s+.*تراك", r"بعد\s+.*مسار", r"مسار.*بعد\s+كده", r"تراك.*بعد\s+كده", r"مفيد", r"اعمل\s+بيه", r"استفيد", r"سي\s*في", r"بورتفوليو", r"مشروع", r"اعمل\s+ايه\s+بعد", r"اقدر\s+اعمل\s+ايه",
     ]):
         return None
     _, track_code, track_label, path = _track_and_path(user_id, text)
@@ -593,8 +593,8 @@ def _answer_study_plan_question(*, text: str, user_id: str, topic_id: Optional[s
         )
     else:
         out = response_for_language(
-            f"Here’s a practical plan: 1) Start with {first}; 2) write one tiny example in your own words; 3) do one quick exercise; 4) only then preview {second}. If {first} feels hard, ask me to break it down before moving on.",
-            f"دي خطة عملية: 1) ابدأ بـ {first}؛ 2) اكتب مثال صغير بأسلوبك؛ 3) حل تمرين سريع؛ 4) بعدها بس بص على {second}. لو {first} صعب، اسألني أبسطه قبل ما تكمل.",
+            f"Here’s a practical plan: 1) Start with {first}; 2) spend 10 minutes understanding the main idea; 3) write one tiny example in your own words; 4) do one quick exercise; 5) only then preview {second}. If {first} feels hard, ask me to break it into a simpler example before moving on.",
+            f"دي خطة عملية: 1) ابدأ بـ {first}؛ 2) خُد 10 دقايق تفهم الفكرة الأساسية؛ 3) اكتب مثال صغير بأسلوبك؛ 4) حل تمرين سريع؛ 5) بعدها بس بص على {second}. لو {first} صعب، اسألني أبسطه بمثال قبل ما تكمل.",
             language,
         )
     return _output(out, metadata, language=language, action="recommend_resource")
@@ -638,7 +638,7 @@ def _answer_topic_start_question(*, text: str, user_id: str, language: str) -> O
 
 def _answer_learning_path_question(*, text: str, user_id: str, topic_id: Optional[str], module_id: Optional[str], language: str) -> Optional[Dict[str, Any]]:  # type: ignore[override]
     # Do not treat career-after-track questions as a curriculum roadmap.
-    if _matches_any(text, [r"after\s+.*track", r"finish\s+.*track", r"finishing\s+.*track", r"jobs?", r"career", r"work", r"cv", r"portfolio", r"project", r"بعد\s+.*التراك", r"اشتغل", r"وظيفة", r"شغل"]):
+    if _matches_any(text, [r"after\s+.*track", r"finish\s+.*track", r"finishing\s+.*track", r"jobs?", r"career", r"work", r"cv", r"portfolio", r"project", r"useful", r"what\s+can\s+i\s+do\s+with\s+it", r"بعد\s+.*التراك", r"بعد\s+.*تراك", r"بعد\s+.*مسار", r"مسار.*بعد\s+كده", r"اشتغل", r"وظيفة", r"شغل", r"مفيد", r"اعمل\s+بيه", r"استخدمه"]):
         return None
     if not _matches_any(text, [
         r"\bwhat\s+should\s+i\s+(learn|study|start)\b", r"\bwhat\s+should\s+i\s+start\s+with\b", r"\bwhat\s+to\s+(learn|study)\b",

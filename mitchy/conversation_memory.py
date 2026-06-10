@@ -166,12 +166,51 @@ def _find_concepts_in_text(text: str) -> List[str]:
     return found
 
 
+def _primary_concept_from_text(text: str) -> Optional[str]:
+    """Return the main concept in one message, not every incidental term.
+
+    This prevents a SQL definition that mentions "join tables" from being
+    remembered as SQL JOINs. For follow-ups like "same thing in Arabic",
+    the nearest assistant answer should resolve to the topic the user was
+    actually discussing.
+    """
+    concepts = _find_concepts_in_text(text)
+    if not concepts:
+        return None
+    lowered = normalize_for_intent(text).lower()
+
+    # JOIN should win only when the message is explicitly about JOINs, not when
+    # a generic SQL definition merely lists joins as one SQL capability.
+    if "SQL JOINs" in concepts and re.search(r"\bjoin(s)?\b|جوين|ربط\s+جداول", lowered, flags=re.IGNORECASE):
+        if not re.search(r"\bwhat\s+is\s+sql\b|\bsql\s+is\b|sql\s+هي|لغة.*sql|language\s+used\s+to\s+ask\s+databases", lowered, flags=re.IGNORECASE):
+            return "SQL JOINs"
+    if "SQL" in concepts:
+        return "SQL"
+    if "Power BI" in concepts:
+        return "Power BI"
+    return concepts[0]
+
+
+def last_referenced_concept(recent_history: List[Dict[str, Any]]) -> Optional[str]:
+    """Find the nearest real concept from the current chat session."""
+    for row in reversed(_iter_history_messages(recent_history)):
+        content = row.get("content") or ""
+        concept = _primary_concept_from_text(content)
+        if concept:
+            return concept
+    return None
+
+
 def extract_recent_concepts(recent_history: List[Dict[str, Any]], limit: int = 4) -> List[str]:
+    # Recency-aware: if a concept appears again, move it to the end.
     concepts: List[str] = []
     for text in _message_texts_from_history(recent_history)[-24:]:
-        for concept in _find_concepts_in_text(text):
-            if concept not in concepts:
-                concepts.append(concept)
+        concept = _primary_concept_from_text(text)
+        if not concept:
+            continue
+        if concept in concepts:
+            concepts.remove(concept)
+        concepts.append(concept)
     return concepts[-limit:]
 
 
@@ -230,10 +269,27 @@ def _is_compare_question(text: str) -> bool:
 
 def _is_translate_same_question(text: str) -> Optional[str]:
     lowered = normalize_for_intent(text).lower()
-    if re.search(r"\b(same thing|same concept|same answer|translate|in arabic|arabic version|say it in arabic)\b", lowered) or any(p in lowered for p in ["نفس الكلام", "قولها بالعربي", "اشرحها بالعربي", "بالعربي"]):
-        return "ar"
-    if re.search(r"\b(in english|english version|say it in english|translate.*english|explain.*english)\b", lowered) or any(p in lowered for p in ["بالانجليزي", "بالإنجليزي", "انجليزي"]):
+
+    # Explicit target language must win over generic phrases like "same thing".
+    # Previously, "Now explain the same thing in English" matched "same thing"
+    # first and incorrectly returned Arabic.
+    wants_english = bool(re.search(r"\b(in english|english version|say it in english|translate.*english|explain.*english|english)\b", lowered)) or any(
+        p in lowered for p in ["بالانجليزي", "بالإنجليزي", "انجليزي", "إنجليزي"]
+    )
+    wants_arabic = bool(re.search(r"\b(in arabic|arabic version|say it in arabic|translate.*arabic|arabic)\b", lowered)) or any(
+        p in lowered for p in ["بالعربي", "عربي", "العربي", "نفس الكلام بالعربي", "قولها بالعربي", "اشرحها بالعربي"]
+    )
+    if wants_english:
         return "en"
+    if wants_arabic:
+        return "ar"
+
+    # If the user asks for the same thing without naming a language, keep the
+    # user's current language.
+    if re.search(r"\b(same thing|same concept|same answer|translate|say it again)\b", lowered) or any(
+        p in lowered for p in ["نفس الكلام", "اشرحها تاني", "قولها تاني"]
+    ):
+        return detect_language(text)
     return None
 
 
@@ -279,6 +335,34 @@ def answer_from_conversation_memory(message: str, recent_history: List[Dict[str,
     text = normalize_for_intent(message)
     concepts_in_message = _find_concepts_in_text(text)
     recent_concepts = extract_recent_concepts(recent_history, limit=5)
+    nearest_concept = last_referenced_concept(recent_history)
+
+    if re.search(r"\b(remember\s+the\s+chat|remember\s+this\s+chat|summari[sz]e\s+the\s+chat|what\s+did\s+we\s+talk\s+about)\b", text, flags=re.IGNORECASE) or any(p in text for p in ["فاكر الشات", "لخص الشات", "احنا اتكلمنا عن ايه"]):
+        concepts = recent_concepts or []
+        if concepts:
+            joined = ", ".join(concepts[-4:])
+            response_text = response_for_language(
+                f"Yes. In this chat, we recently discussed: {joined}. I can use that context when you say things like ‘same thing’, ‘both’, or ‘make that easier’.",
+                f"أيوه. في الشات ده اتكلمنا مؤخرًا عن: {joined}. أقدر أستخدم السياق ده لما تقول: نفس الكلام، الاتنين، أو ابسطها.",
+                language,
+            )
+        else:
+            response_text = response_for_language(
+                "I can use the recent messages in this chat, but I do not see a clear concept to summarize yet.",
+                "أقدر أستخدم الرسائل الأخيرة في الشات، لكن مش شايف مفهوم واضح ألخصه لسه.",
+                language,
+            )
+        return {
+            "response_text": response_text,
+            "learning_state": "progressing",
+            "sentiment_score": 0.0,
+            "cognitive_load": 0.2,
+            "suggested_action": "none",
+            "recommended_format": "textual",
+            "recommended_format_db": "Textual",
+            "confidence": 0.82,
+            "metadata": {"source": "conversation_memory", "used_gemini": False, "detected_language": language, "answered_field": "chat_memory_summary", "recent_concepts": concepts},
+        }
 
     if _is_compare_question(message):
         concepts: List[str] = []
@@ -301,9 +385,9 @@ def answer_from_conversation_memory(message: str, recent_history: List[Dict[str,
 
     target_language = _is_translate_same_question(message)
     if target_language:
-        concepts = concepts_in_message or recent_concepts
+        concepts = concepts_in_message or ([nearest_concept] if nearest_concept else recent_concepts)
         if concepts:
-            concept = concepts[-1]
+            concept = concepts[0] if concepts_in_message else concepts[-1]
             response_text = _concept_answer(concept, target_language)
             if response_text:
                 return {
@@ -321,9 +405,9 @@ def answer_from_conversation_memory(message: str, recent_history: List[Dict[str,
         return None
 
     if _is_simplify_followup(message):
-        concepts = concepts_in_message or recent_concepts
+        concepts = concepts_in_message or ([nearest_concept] if nearest_concept else recent_concepts)
         if concepts:
-            concept = concepts[-1]
+            concept = concepts[0] if concepts_in_message else concepts[-1]
             response_text = _concept_answer(concept, language)
             if response_text:
                 simple_prefix = response_for_language("Simply: ", "ببساطة: ", language)
