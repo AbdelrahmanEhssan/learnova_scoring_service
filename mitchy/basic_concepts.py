@@ -24,6 +24,24 @@ def _has_any(text: str, patterns: list[str]) -> bool:
     return any(re.search(p, text, flags=re.IGNORECASE) for p in patterns)
 
 
+def _has_start_intent(text: str) -> bool:
+    return _has_any(text, [
+        r"\bwhere\s+(do|should|can)\s+i\s+start\b",
+        r"\bhow\s+(do|should|can)\s+i\s+start\b",
+        r"\bstart\s+(with|learning|studying)\b",
+        r"\bfocus\s+on\b",
+        r"\bi\s+want\s+to\s+focus\s+on\b",
+        r"\bstuck\b",
+        r"\bnot\s+understand\b",
+        r"\bمش\s+فاهم\b",
+        r"\bنبدأ\b",
+        r"\bنبدا\b",
+        r"\bأبدأ\b",
+        r"\bابدأ\b",
+        r"\bابدا\b",
+    ])
+
+
 def answer_basic_concept_if_needed(message: str) -> Optional[Dict[str, Any]]:
     original = str(message or "").strip()
     text = normalize_for_intent(original)
@@ -62,7 +80,12 @@ def answer_basic_concept_if_needed(message: str) -> Optional[Dict[str, Any]]:
             language), language=language, concept="data_cleaning")
 
     if _has_any(text, [r"\bsql\b", r"اس\s*كيو\s*ال"]):
-        if _has_any(text, [r"joins?", r"join\b", r"جوين", r"ربط\s+جداول"]):
+        if _has_start_intent(text):
+            return _output(response_for_language(
+                "To start SQL, do this: 1) understand table, row, and column; 2) write one SELECT query; 3) add a WHERE filter; 4) then practice JOINs with two tiny tables.",
+                "عشان تبدأ SQL: 1) افهم يعني إيه table و row و column؛ 2) اكتب SELECT بسيط؛ 3) ضيف WHERE filter؛ 4) بعدها اتدرب على JOIN بجدولين صغيرين.",
+                language), language=language, concept="sql_start_plan")
+        if _has_any(text, [r"\bsql\s+joins?\b", r"\bjoins?\b", r"\bjoin\b", r"جوين", r"ربط\s+جداول"]):
             return _output(response_for_language(
                 "A JOIN combines rows from related tables. Example: customers are in one table and orders are in another; a JOIN lets you see each order with the customer who made it.",
                 "الـ JOIN بيربط صفوف من جداول بينها علاقة. مثال: جدول للعملاء وجدول للطلبات؛ الـ JOIN يخليك تشوف كل طلب مع العميل اللي عمله.",
@@ -89,10 +112,15 @@ def answer_basic_concept_if_needed(message: str) -> Optional[Dict[str, Any]]:
             "الجبر الخطي هو رياضيات المتجهات والمصفوفات. في شغل الداتا بيساعدنا نمثل قيم كتير مرة واحدة، زي خصائص مستخدم أو منتج أو صورة.",
             language), language=language, concept="linear_algebra")
 
-    if _has_any(text, [r"power\s*bi", r"باور\s*بي", r"بور\s*بي"]):
+    if _has_any(text, [r"power\s*bi", r"bi\s*power", r"باور\s*بي", r"بور\s*بي"]):
+        if _has_start_intent(text):
+            return _output(response_for_language(
+                "To start Power BI, do this: 1) load a small dataset; 2) clean column names; 3) create one chart; 4) add one slicer; 5) avoid advanced DAX at the beginning.",
+                "عشان تبدأ Power BI: 1) حمّل dataset صغيرة؛ 2) نظف أسماء الأعمدة؛ 3) اعمل chart واحد؛ 4) ضيف slicer واحد؛ 5) متبدأش بـ DAX المتقدم في الأول.",
+                language), language=language, concept="power_bi_start_plan")
         return _output(response_for_language(
-            "Power BI is for interactive dashboards and reports. Excel is great for quick analysis, while Power BI is better when you need refreshable dashboards, sharing, and business reporting at scale.",
-            "Power BI أداة لعمل داشبوردات وتقارير تفاعلية. Excel ممتاز للتحليل السريع، لكن Power BI أفضل لما تحتاج داشبورد يتحدث ويتشارك مع فريق أو شركة.",
+            "Power BI is a Microsoft tool for turning data into interactive dashboards and reports that teams can explore and refresh.",
+            "Power BI أداة من Microsoft بتحول البيانات لداشبوردات وتقارير تفاعلية يقدر الفريق يستكشفها ويتابع تحديثها.",
             language), language=language, concept="power_bi")
 
     if _has_any(text, [r"python", r"بايثون"]):
