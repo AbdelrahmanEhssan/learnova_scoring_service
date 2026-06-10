@@ -31,6 +31,24 @@ def answer_basic_concept_if_needed(message: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
 
+    if _has_any(text, [r"\bwhat\s+is\s+data\b", r"\bdefine\s+data\b", r"يعني\s+ايه\s+داتا", r"يعني\s+ايه\s+بيانات", r"ما\s+هي\s+البيانات"]):
+        return _output(response_for_language(
+            "Data is raw facts or values before interpretation, like sales numbers, dates, names, clicks, or survey answers.",
+            "البيانات هي حقائق أو قيم خام قبل تفسيرها، زي أرقام مبيعات، تواريخ، أسماء، نقرات، أو إجابات استبيان.",
+            language), language=language, concept="data")
+
+    if _has_any(text, [r"\bwhat\s+is\s+knowledge\b", r"\bdefine\s+knowledge\b", r"يعني\s+ايه\s+معرفه", r"يعني\s+ايه\s+معرفة", r"ما\s+هي\s+المعرفة"]):
+        return _output(response_for_language(
+            "Knowledge is the understanding you build from information and use to make decisions or take action.",
+            "المعرفة هي الفهم اللي بتبنيه من المعلومات وتستخدمه عشان تاخد قرار أو تعمل خطوة.",
+            language), language=language, concept="knowledge")
+
+    if _has_any(text, [r"\bwhat\s+is\s+information\b", r"\bdefine\s+information\b", r"يعني\s+ايه\s+معلومات", r"ما\s+هي\s+المعلومات"]):
+        return _output(response_for_language(
+            "Information is data after it has been organized or processed so it becomes meaningful and useful.",
+            "المعلومات هي البيانات بعد ما تتنظم أو تتعالج فتكون مفهومة ومفيدة.",
+            language), language=language, concept="information")
+
     if _has_any(text, [r"تحليل\s+بيانات", r"تحليل\s+البيانات", r"data\s+analysis", r"data\s+analytics"]):
         return _output(response_for_language(
             "Data analysis means taking raw data, cleaning it, finding patterns, and turning it into useful decisions. For example, a company can analyze sales data to know which product performs best and why.",
@@ -94,5 +112,12 @@ def answer_basic_concept_if_needed(message: str) -> Optional[Dict[str, Any]]:
             "A data analyst cleans data, writes queries, builds dashboards, finds trends, and explains what the numbers mean so teams can make better decisions.",
             "محلل البيانات بينضف الداتا، يكتب استعلامات، يبني داشبوردات، يطلع تريندات، ويشرح الأرقام عشان الفرق تاخد قرارات أحسن.",
             language), language=language, concept="data_analyst_daily_work")
+
+
+    if _has_any(text, [r"\bjava\b", r"جافا"]):
+        return _output(response_for_language(
+            "Java is a general-purpose programming language used for backend systems, Android apps, enterprise software, and large applications. It may not be the main focus of your current LearNova path, but the idea is similar to Python: you write instructions that the computer can run.",
+            "Java لغة برمجة عامة بتستخدم في الباك إند، تطبيقات Android، وبرامج الشركات الكبيرة. ممكن ما تكونش محور مسارك الحالي في LearNova، لكنها زي Python في الفكرة العامة: بتكتب تعليمات الكمبيوتر ينفذها.",
+            language), language=language, concept="java_general")
 
     return None

@@ -12,6 +12,7 @@ from mitchy.db import (
     save_mitchy_interaction,
 )
 from mitchy.basic_concepts import answer_basic_concept_if_needed
+from mitchy.conversation_memory import answer_from_conversation_memory, fetch_chat_session_turns
 from mitchy.document_retrieval import answer_from_document_chunks
 from mitchy.health_safety import answer_health_safety_if_needed
 from mitchy.identity_responses import answer_identity_or_smalltalk_if_needed
@@ -144,7 +145,7 @@ def _attach_context_metadata(output: Dict[str, Any], *, topic_id: Optional[str],
     return output
 
 
-def process_mitchy_message(user_id: str, message: str, user_email: Optional[str] = None, full_name: Optional[str] = None, topic_id: Optional[str] = None, module_id: Optional[str] = None, screen_context: Optional[str] = None) -> Dict[str, Any]:
+def process_mitchy_message(user_id: str, message: str, user_email: Optional[str] = None, full_name: Optional[str] = None, topic_id: Optional[str] = None, module_id: Optional[str] = None, screen_context: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
     clean_message = str(message or "").strip()
     if not clean_message:
         raise ValueError("Message cannot be empty")
@@ -152,7 +153,9 @@ def process_mitchy_message(user_id: str, message: str, user_email: Optional[str]
     language = detect_language(clean_message)
     profile = fetch_student_profile(user_id)
     rich_user_context = build_user_context(user_id=user_id, user_email=user_email, full_name=full_name, topic_id=topic_id, module_id=module_id, profile=profile)
-    recent_turns = fetch_recent_mitchy_turns(user_id=user_id, limit=12)
+    interaction_turns = fetch_recent_mitchy_turns(user_id=user_id, limit=24)
+    session_turns = fetch_chat_session_turns(user_id=user_id, session_id=session_id, limit=36)
+    recent_turns = session_turns if session_turns else interaction_turns
     sentiment_history = fetch_recent_sentiment_scores(user_id=user_id, limit=8)
     content_context = fetch_content_context(topic_id=topic_id, module_id=module_id)
     local_analysis = _safe_local_analysis(message=clean_message, sentiment_history=sentiment_history)
@@ -171,6 +174,10 @@ def process_mitchy_message(user_id: str, message: str, user_email: Optional[str]
         final_output = answer_identity_or_smalltalk_if_needed(clean_message, has_history=bool(recent_turns))
         if final_output:
             model_name = "local_identity_response"
+    if final_output is None:
+        final_output = answer_from_conversation_memory(clean_message, recent_turns)
+        if final_output:
+            model_name = "conversation_memory"
     if final_output is None:
         final_output = answer_progress_status_question(message=clean_message, user_id=user_id, topic_id=topic_id, module_id=module_id)
         if final_output:
@@ -214,6 +221,9 @@ def process_mitchy_message(user_id: str, message: str, user_email: Optional[str]
 
     final_output = _attach_context_metadata(final_output, topic_id=topic_id, module_id=module_id, screen_context=screen_context, profile=profile, content_context=content_context, language=language)
     final_output.setdefault("metadata", {})["user_context_attached_to_provider_prompt"] = True
+    if session_id:
+        final_output["metadata"]["request_session_id"] = session_id
+    final_output["metadata"]["chat_session_memory_attached"] = bool(session_turns)
     final_output = _force_non_empty_output(final_output, local_analysis, source="final_non_empty_guard", language=language)
     final_output = _polish_output_for_chat_context(final_output, clean_message=clean_message, has_history=bool(recent_turns))
 
